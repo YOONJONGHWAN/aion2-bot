@@ -4,8 +4,7 @@ from flask import Flask
 from threading import Thread
 import discord
 from discord.ext import tasks, commands
-import requests
-from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
 
 # Flask 웹 서버 (Render 핑 유지용)
 app = Flask('')
@@ -26,39 +25,44 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# PlayNC 아이온2 공지사항 목록을 가져오는 함수
-def get_latest_official_notices_via_api():
+# Playwright를 이용해 실제 브라우저로 아이온2 공지사항 크롤링
+async def get_latest_official_notices_via_playwright():
     notices = []
-    try:
-        api_url = "https://aion2.plaync.com/ko-kr/board/notice/list"
+    async with async_playwright() as p:
+        # 헤드리스 크롬 브라우저 실행
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox"]
+        )
+        page = await browser.new_page(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
         
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://aion2.plaync.com/ko-kr/board/notice/list"
-        }
-        
-        response = requests.get(api_url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
+        try:
+            await page.goto("https://aion2.plaync.com/ko-kr/board/notice/list", timeout=30000)
+            # 공지사항 리스트가 렌더링될 때까지 대기
+            await page.wait_for_selector("a", timeout=10000)
             
-            for a in soup.find_all('a', href=True):
-                href = a['href']
-                title = a.get_text(strip=True)
+            # 페이지 내 모든 링크 요소 수집
+            links = await page.query_selector_all("a")
+            for link in links:
+                href = await link.get_attribute("href")
+                title = await link.inner_text()
+                title = title.strip()
                 
-                if 'view' in href and len(title) > 2:
+                if href and 'view' in href and len(title) > 2:
                     if not href.startswith('http'):
                         href = 'https://aion2.plaync.com' + href
                     
                     if not any(n['link'] == href for n in notices):
                         notices.append({'title': title, 'link': href})
                         
-        notices = notices[:5]
-    except Exception as e:
-        print(f"API/크롤링 중 에러 발생: {e}")
-        
+            notices = notices[:5]
+        except Exception as e:
+            print(f"Playwright 크롤링 에러 발생: {e}")
+        finally:
+            await browser.close()
+            
     return notices
 
 # 디스코드 봇 준비 완료 이벤트
@@ -74,7 +78,7 @@ async def on_ready():
 async def manual_check(ctx):
     await ctx.send("🔍 아이온2 최신 공지사항을 확인하는 중입니다...")
     
-    notices = await asyncio.to_thread(get_latest_official_notices_via_api)
+    notices = await get_latest_official_notices_via_playwright()
     
     if not notices:
         await ctx.send("❌ 공지사항을 불러오지 못했거나 가져올 수 있는 항목이 없습니다.")
@@ -90,8 +94,9 @@ async def manual_check(ctx):
 @tasks.loop(minutes=5)
 async def check_aion2_updates():
     print("자동 공지 확인 중 (5분 주기)...")
-    notices = await asyncio.to_thread(get_latest_official_notices_via_api)
+    notices = await get_latest_official_notices_via_playwright()
     if notices:
+        # 추후 자동 알림 기능 고도화 시 활용할 수 있는 영역입니다.
         pass
 
 # 봇 실행
