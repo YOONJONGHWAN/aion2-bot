@@ -29,21 +29,21 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def get_latest_official_notices_via_playwright():
     notices = []
     async with async_playwright() as p:
-        # 헤드리스 크롬 브라우저 실행
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"]
-        )
-        page = await browser.new_page(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        )
-        
         try:
+            # Render 환경에 맞춰 명시적인 실행 경로 설정
+            browser = await p.chromium.launch(
+                executable_path="/opt/render/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome",
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            )
+            
+            page = await browser.new_page(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            )
+            
             await page.goto("https://aion2.plaync.com/ko-kr/board/notice/list", timeout=30000)
-            # 공지사항 리스트가 렌더링될 때까지 대기
             await page.wait_for_selector("a", timeout=10000)
             
-            # 페이지 내 모든 링크 요소 수집
             links = await page.query_selector_all("a")
             for link in links:
                 href = await link.get_attribute("href")
@@ -58,10 +58,9 @@ async def get_latest_official_notices_via_playwright():
                         notices.append({'title': title, 'link': href})
                         
             notices = notices[:5]
+            await browser.close()
         except Exception as e:
             print(f"Playwright 크롤링 에러 발생: {e}")
-        finally:
-            await browser.close()
             
     return notices
 
@@ -96,7 +95,6 @@ async def check_aion2_updates():
     print("자동 공지 확인 중 (5분 주기)...")
     notices = await get_latest_official_notices_via_playwright()
     if notices:
-        # 추후 자동 알림 기능 고도화 시 활용할 수 있는 영역입니다.
         pass
 
 # 봇 실행
