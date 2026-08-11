@@ -39,14 +39,18 @@ async def get_latest_official_notices_with_browser():
             
             target_url = "https://aion2.plaync.com/ko-kr/board/notice/list" 
             await page.goto(target_url, timeout=60000)
-            await page.wait_for_timeout(3000)  # 페이지 로딩 대기
+            
+            # 핵심: a.title 요소가 화면에 나타날 때까지 최대 10초간 대기합니다.
+            try:
+                await page.wait_for_selector('a.title', timeout=10000)
+            except:
+                # 못 찾더라도 추가로 3초 더 대기
+                await page.wait_for_timeout(3000)
             
             content = await page.content()
             await browser.close()
             
             soup = BeautifulSoup(content, 'html.parser')
-            
-            # 알려주신 구조(a.title)에 맞춰 정확하게 선택
             items = soup.select('a.title')
             
             for item in items[:5]:  # 상위 5개 가져오기
@@ -54,7 +58,6 @@ async def get_latest_official_notices_with_browser():
                 link = item.get('href', '')
                 
                 if title:
-                    # 상대 경로일 경우 도메인 붙여주기
                     if link and not link.startswith('http'):
                         link = "https://aion2.plaync.com" + link
                     notices.append({"title": title, "link": link})
