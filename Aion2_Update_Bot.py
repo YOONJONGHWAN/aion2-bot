@@ -1,133 +1,123 @@
 import os
 import asyncio
-from flask import Flask
 from threading import Thread
+from flask import Flask
 import discord
-from discord.ext import tasks, commands
+from discord.ext import commands
 from playwright.async_api import async_playwright
 
-# Flask 웹 서버 (Render 핑 유지용)
+# 1. Flask 서버 설정 (Render 바인딩 및 Keep-Alive용)
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Aion2 Bot is running!"
+    return "Bot is running!"
 
 def run_flask():
-    app.run(host='0.0.0.0', port=8080)
+    # Render에서 지정해주는 PORT 환경변수 연결 (기본값 8080)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    Thread(target=run_flask, daemon=True).start()
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
 
-# 디스코드 봇 설정
+# 2. 디스코드 봇 설정
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
-last_seen_link = None  # 중복 알림 방지용 저장 변수
+# ⚠️ 크롤링할 실제 CM 스토리 게시판 URL 주소로 변경하세요.
+TARGET_URL = "https://aion2.plaync.com/" 
 
-# Playwright로 cm_story 최신 글 가져오는 함수
-async def fetch_latest_notices():
-    notices = []
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            
-            await page.goto(TARGET_URL, wait_until="networkidle", timeout=20000)
-            await page.wait_for_timeout(2500)
-            
-            links = await page.locator('a[href*="/board/cm_story/view"]').all()
-            seen = set()
-            
-            for link in links:
-                title = (await link.inner_text()).strip()
-                href = await link.get_attribute("href")
-                
-                if href and href not in seen and len(title) > 1:
-                    seen.add(href)
-                    if not href.startswith("http"):
-                        href = "https://aion2.plaync.com" + href
-                    notices.append({"title": title, "link": href})
-                    if len(notices) >= 5:
-                        break
-                        
-            await browser.close()
-    except Exception as e:
-        print(f"크롤링 에러 발생: {e}")
-        
-    return notices
-
-# 봇 준비 완료 이벤트
-@bot.event
-async def on_ready():
-    global last_seen_link
-    print(f'로그인 완료: {bot.user.name}')
-    
-    # 처음 봇이 켜질 때 기준 최신 글 설정 (이전 글 폭풍 알림 방지)
-    initial_notices = await fetch_latest_notices()
-    if initial_notices:
-        last_seen_link = initial_notices[0]['link']
-        print(f"기준 최신 글 설정 완료: {initial_notices[0]['title']}")
-        
-    if not check_updates.is_running():
-        check_updates.start()
-
-# 수동 확인 명령어 (!확인)
-@bot.command(name='확인')
-async def manual_check(ctx):
-    await ctx.send("🔍 CM 스토리 최신 게시글을 확인하는 중입니다...")
-    notices = await fetch_latest_notices()
-    
-    if not notices:
-        await ctx.send("❌ 게시글을 불러오지 못했습니다.")
-        return
-        
-    embed = discord.Embed(
-        title="📢 아이온2 CM 스토리 최신 소식",
-        color=discord.Color.blue()
-    )
-    for idx, notice in enumerate(notices[:3], 1):
-        embed.add_field(
-            name=f"{idx}. {notice['title']}",
-            value=f"[게시글 바로가기]({notice['link']})",
-            inline=False
+# 3. Playwright 크롤링 함수 (Render 환경 최적화)
+async def fetch_latest_post():
+    async with async_playwright() as p:
+        # 리눅스 컨테이너 환경 필수 옵션 지정
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",  # Shared Memory 부족으로 인한 크래시 방지
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process"
+            ]
         )
         
-    await ctx.send(embed=embed)
-
-# 30분 주기로 새 글 확인 및 자동 알림
-@tasks.loop(minutes=30)
-async def check_updates():
-    global last_seen_link
-    notices = await fetch_latest_notices()
-    
-    if not notices:
-        return
+        # 실제 일반 브라우저처럼 보이도록 User-Agent 및 뷰포트 설정
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/123.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 720}
+        )
         
-    latest = notices[0]
-    
-    # 새 글이 등록되었을 경우
-    if last_seen_link and latest['link'] != last_seen_link:
-        last_seen_link = latest['link']
+        page = await context.new_page()
         
-        # DISCORD_CHANNEL_ID 환경 변수가 설정된 채널로 자동 알림 전송
-        channel_id = os.environ.get("DISCORD_CHANNEL_ID")
-        if channel_id:
-            channel = bot.get_channel(int(channel_id))
-            if channel:
-                embed = discord.Embed(
-                    title="🆕 아이온2 새 소식이 등록되었습니다!",
-                    description=f"**[{latest['title']}]({latest['link']})**",
-                    color=discord.Color.green()
-                )
-                await channel.send(embed=embed)
+        try:
+            # 타임아웃 60초 설정 및 HTML 구조만 먼저 로드되면 진행
+            await page.goto(TARGET_URL, timeout=60000, wait_until="domcontentloaded")
+            
+            # 동적 스크립트 실행을 위해 3초 대기
+            await asyncio.sleep(3)
+            
+            # TODO: 크롤링하려는 페이지의 실제 게시글 제목/링크 CSS 셀렉터로 수정 필요
+            # 예시 selector: '.board-list .title' 또는 'a.post-link'
+            title_element = await page.query_selector('a') 
+            
+            if title_element:
+                title = await title_element.inner_text()
+                link = await title_element.get_attribute('href')
+                
+                # 상대 경로 링크 처리 (예: /board/123 -> https://domain.com/board/123)
+                if link and link.startswith('/'):
+                    base_url = "/".join(TARGET_URL.split("/")[:3])
+                    link = base_url + link
+                    
+                return {"title": title.strip(), "link": link}
+            else:
+                print("[WARN] 지정한 게시글 요소를 찾지 못했습니다.")
+                return None
 
+        except Exception as e:
+            print(f"[ERROR] Playwright 크롤링 에러 발생: {e}")
+            return None
+        finally:
+            await browser.close()
+
+# 4. 디스코드 봇 이벤트 및 명령어
+@bot.event
+async def on_ready():
+    print(f"[INFO] 디스코드 봇 로그인 완료: {bot.user.name}")
+
+@bot.command(name='확인')
+async def check_update(ctx):
+    await ctx.send("CM 스토리 최신 게시글을 확인하는 중입니다...")
+    
+    post = await fetch_latest_post()
+    
+    if post:
+        title = post.get("title", "제목 없음")
+        link = post.get("link", TARGET_URL)
+        await ctx.send(f"📢 **최신 게시글:** {title}\n🔗 {link}")
+    else:
+        await ctx.send("게시글을 불러오지 못했습니다. (사이트 차단 또는 셀렉터 확인 필요)")
+
+# 5. 메인 실행
 if __name__ == "__main__":
+    # 웹 서버 실행 (Render 포트 바인딩)
+    keep_alive()
+    
+    # Render의 Environment Variables에 설정된 DISCORD_TOKEN을 읽어옴
     TOKEN = os.environ.get("DISCORD_TOKEN")
+    
     if TOKEN:
-        keep_alive()
         bot.run(TOKEN)
     else:
-        print("Error: DISCORD_TOKEN 환경 변수를 찾을 수 없습니다.")
+        print("[CRITICAL] DISCORD_TOKEN 환경변수가 설정되지 않았습니다.")
