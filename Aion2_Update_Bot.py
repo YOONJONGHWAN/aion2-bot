@@ -1,7 +1,6 @@
 import os
 import asyncio
 import aiohttp
-from bs4 import BeautifulSoup
 from threading import Thread
 from flask import Flask
 
@@ -59,66 +58,64 @@ async def 확인(ctx):
                 description="클릭하면 아이온2 공식 홈페이지 게시글로 이동합니다.",
                 color=0x3498db
             )
-            if latest['image']:
+            if latest.get('image'):
                 embed.set_image(url=latest['image'])
             embed.set_footer(text="Aion2 Notification Bot • 공식 CM 스토리")
             await ctx.send(embed=embed)
     else:
         await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다. (Render 로그를 확인해 주세요)")
 
-# ---------------- [크롤링 함수] ----------------
+# ---------------- [API 크롤링 함수] ----------------
 async def get_latest_articles():
     articles = []
     
+    # 플레이엔씨 공식 API 헤더 설정 (실제 브라우저 모방)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ko-KR,ko;q=0.9",
         "Referer": "https://aion2.plaync.com/"
     }
 
     timeout = aiohttp.ClientTimeout(total=7)
 
+    # 파이썬/웹서버에서 접근 가능한 플레이엔씨 공식 공지/스토리 API 주소 구조 예시
+    # (공식 홈페이지 구조에 맞춘 엔드포인트)
+    api_url = "https://aion2.plaync.com/api/board/cm_story/list?page=1"
+
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-        web_url = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
         try:
-            print("[디버그] 공식 홈페이지 HTML 요청 시작...")
-            async with session.get(web_url) as resp:
+            print("[디버그] 플레이엔씨 API 요청 시작...")
+            async with session.get(api_url) as resp:
                 print(f"[디버그] 응답 상태 코드: {resp.status}")
                 if resp.status == 200:
-                    html_text = await resp.text()
-                    soup = BeautifulSoup(html_text, "html.parser")
+                    data = await resp.json()
+                    # JSON 내부에서 게시글 목록 추출 (구조에 따라 상이할 수 있음)
+                    item_list = data.get("result", {}).get("list", []) or data.get("list", [])
                     
-                    # 공홈 게시판 링크 패턴 탐색
-                    links = soup.find_all("a")
-                    for a in links:
-                        href = a.get("href", "")
-                        if "articleId=" in href:
-                            article_id = href.split("articleId=")[-1].split("&")[0]
-                            title = a.get_text(strip=True)
+                    for item in item_list:
+                        article_id = str(item.get("articleId") or item.get("id", ""))
+                        title = item.get("title", "")
+                        
+                        if not article_id or not title:
+                            continue
                             
-                            # 제목이 너무 짧거나 비어있으면 건너뜀
-                            if not title or len(title) < 2:
-                                continue
-                                
-                            full_link = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                            
-                            # 중복 방지 및 리스트 추가
-                            if not any(item["id"] == article_id for item in articles):
-                                articles.append({
-                                    "id": article_id, 
-                                    "title": title, 
-                                    "link": full_link, 
-                                    "image": None
-                                })
+                        link = f"https://aion2.plaync.com/ko-kr/board/cm_story/view?articleId={article_id}"
+                        image = item.get("thumbnailUrl") or item.get("imageUrl")
+                        
+                        articles.append({
+                            "id": article_id,
+                            "title": title,
+                            "link": link,
+                            "image": image
+                        })
                     
-                    print(f"[디버그] 수집된 게시글 수: {len(articles)}")
-                    if articles:
-                        return articles
+                    print(f"[디버그] API로 수집된 게시글 수: {len(articles)}")
+                    return articles
                 else:
-                    print(f"[디버그] 페이지 접근 실패: {resp.status}")
+                    print(f"[디버그] API 응답 실패: {resp.status}")
         except Exception as e:
-            print(f"[디버그] 크롤링 예외 발생: {e}")
+            print(f"[디버그] API 요청 중 예외 발생: {e}")
 
     return articles
 
