@@ -40,27 +40,31 @@ async def get_latest_official_notices_with_browser():
             target_url = "https://aion2.plaync.com/ko-kr/board/notice/list" 
             await page.goto(target_url, timeout=60000)
             
-            # 핵심: a.title 요소가 화면에 나타날 때까지 최대 10초간 대기합니다.
+            # 요소가 나타날 때까지 대기
             try:
                 await page.wait_for_selector('a.title', timeout=10000)
             except:
-                # 못 찾더라도 추가로 3초 더 대기
                 await page.wait_for_timeout(3000)
             
-            content = await page.content()
+            # 브라우저 내부에서 직접 자바스크립트로 데이터 수집 (가장 확실함)
+            notices = await page.evaluate('''() => {
+                const elements = document.querySelectorAll('a.title');
+                const results = [];
+                elements.forEach(el => {
+                    let title = el.innerText.trim();
+                    let link = el.getAttribute('href');
+                    if (title) {
+                        if (link && !link.startsWith('http')) {
+                            link = 'https://aion2.plaync.com' + link;
+                        }
+                        results.push({ title: title, link: link });
+                    }
+                });
+                return results;
+            }''')
+            
             await browser.close()
-            
-            soup = BeautifulSoup(content, 'html.parser')
-            items = soup.select('a.title')
-            
-            for item in items[:5]:  # 상위 5개 가져오기
-                title = item.get_text(strip=True)
-                link = item.get('href', '')
-                
-                if title:
-                    if link and not link.startswith('http'):
-                        link = "https://aion2.plaync.com" + link
-                    notices.append({"title": title, "link": link})
+            notices = notices[:5]  # 상위 5개만 자르기
                     
     except Exception as e:
         print(f"크롤링 중 에러 발생: {e}")
