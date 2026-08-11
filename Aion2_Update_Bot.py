@@ -24,7 +24,7 @@ def keep_alive():
 
 # ---------------- [디스코드 봇 및 환경 설정] ----------------
 TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = 1536734023982911639
+CHANNEL_ID = 1536734023982911639  # 본인 디스코드 채널 ID
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -76,7 +76,7 @@ async def get_latest_articles():
         "Origin": "https://aion2.plaync.com"
     }
 
-    # 3초 내로 응답 없으면 바로 타임아웃 처리하여 봇 먹통 방지
+    # 5초 내로 응답 없으면 타임아웃 처리
     timeout = aiohttp.ClientTimeout(total=5)
 
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
