@@ -28,34 +28,26 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # 공지사항을 크롤링하는 비동기 함수 (Playwright 사용)
 async def get_latest_official_notices_with_browser():
-    # ⚠️ [수정됨] 내부에서 subprocess로 install을 호출하던 코드를 완전히 제거했습니다.
-    # 빌드 시 이미 설치되었으므로 바로 브라우저를 실행합니다.
-    
     notices = []
     try:
         async with async_playwright() as p:
-            # Render 환경을 고려한 브라우저 실행 옵션
             browser = await p.chromium.launch(
                 headless=True,
                 args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             )
             page = await browser.new_page()
             
-            # 아이온2 공식 공지사항 페이지 (필요시 실제 주소로 변경)
             target_url = "https://aion2.plaync.com/ko-kr/board/notice/list" 
             await page.goto(target_url, timeout=60000)
-            await page.wait_for_timeout(3000)  # 페이지 로딩 대기
+            await page.wait_for_timeout(3000)
             
             content = await page.content()
             await browser.close()
             
             soup = BeautifulSoup(content, 'html.parser')
+            items = soup.select('.board-list-item, .notice-item, li')
             
-            # 사이트 구조에 맞춘 파싱 로직 (예시 태그)
-            # 실제 사이트 구조에 맞게 셀렉터를 조정해야 할 수 있습니다.
-            items = soup.select('.board-list-item, .notice-item, li') # 예시 셀렉터
-            
-            for item in items[:5]: # 상위 5개 가져오기
+            for item in items[:5]:
                 title_elem = item.select_one('.title, a')
                 if title_elem:
                     title = title_elem.get_text(strip=True)
@@ -69,7 +61,6 @@ async def get_latest_official_notices_with_browser():
         
     return notices
 
-# 디스코드 봇 준비 완료 이벤트
 @bot.event
 async def on_ready():
     print(f'로그인 완료: {bot.user.name} (ID: {bot.user.id})')
@@ -77,7 +68,6 @@ async def on_ready():
     if not check_aion2_updates.is_running():
         check_aion2_updates.start()
 
-# 수동 확인 명령어 (!확인)
 @bot.command(name='확인')
 async def manual_check(ctx):
     await ctx.send("🔍 아이온2 최신 공지사항을 확인하는 중입니다...")
@@ -93,20 +83,18 @@ async def manual_check(ctx):
         
     await ctx.send(msg)
 
-# 일정 주기마다 자동으로 공지 확인 (예: 30분 마다)
 @tasks.loop(minutes=30)
 async def check_aion2_updates():
     print("자동 공지 확인 중...")
     notices = await get_latest_official_notices_with_browser()
     if notices:
-        # 여기에 추후 알림을 보낼 채널 ID 로직을 추가할 수 있습니다.
         pass
 
-# 봇 실행
 if __name__ == "__main__":
-    TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+    # ⚠️ 원래 사용하시던 DISCORD_TOKEN 환경 변수 이름으로 원복했습니다.
+    TOKEN = os.environ.get("DISCORD_TOKEN")
     if not TOKEN:
-        print("Error: DISCORD_BOT_TOKEN 환경 변수가 설정되지 않았습니다.")
+        print("Error: DISCORD_TOKEN 환경 변수가 설정되지 않았습니다.")
     else:
         keep_alive()
         bot.run(TOKEN)
