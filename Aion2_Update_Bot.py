@@ -65,19 +65,26 @@ async def 확인(ctx):
     else:
         await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다. (Render 로그를 확인해 주세요)")
 
-# ---------------- [개선된 크롤링 함수] ----------------
+# ---------------- [개선된 크롤링 함수 (보안 헤더 강화)] ----------------
 def get_latest_articles():
     articles = []
     
-    # 브라우저처럼 보이도록 Header 보완
+    # 실제 크롬 브라우저와 동일한 브라우저 헤더 세팅 (우회용)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*",
         "Referer": "https://aion2.plaync.com/ko-kr/board/cm_story/list",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Origin": "https://aion2.plaync.com",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Sec-Ch-Ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin"
     }
 
-    # 1 시도: 공식 API 호출
+    # 1. API 호출 방식
     api_url = "https://aion2.plaync.com/api/board/cm_story/list?page=1&size=5"
     try:
         response = requests.get(api_url, headers=headers, timeout=10)
@@ -85,7 +92,6 @@ def get_latest_articles():
         
         if response.status_code == 200:
             data = response.json()
-            # API 응답 객체 구조 유연하게 탐색
             posts = []
             if isinstance(data, dict):
                 posts = data.get("list") or data.get("data") or data.get("contents") or []
@@ -113,10 +119,13 @@ def get_latest_articles():
             
             if articles:
                 return articles
+        else:
+            print(f"[디버그] API 응답 실패 본문: {response.text[:200]}")
+
     except Exception as e:
         print(f"[디버그] API 호출 에러: {e}")
 
-    # 2 시도: HTML 직접 파싱 (API 실패 시 백업)
+    # 2. HTML 백업 크롤링 방식
     try:
         web_url = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
         res = requests.get(web_url, headers=headers, timeout=10)
