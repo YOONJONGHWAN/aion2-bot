@@ -30,7 +30,6 @@ async def get_latest_official_notices_via_playwright():
     notices = []
     async with async_playwright() as p:
         try:
-            # Render 환경에 맞춰 명시적인 실행 경로 설정
             browser = await p.chromium.launch(
                 executable_path="/opt/render/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome",
                 headless=True,
@@ -42,18 +41,28 @@ async def get_latest_official_notices_via_playwright():
             )
             
             await page.goto("https://aion2.plaync.com/ko-kr/board/notice/list", timeout=30000)
-            await page.wait_for_selector("a", timeout=10000)
             
-            links = await page.query_selector_all("a")
-            for link in links:
-                href = await link.get_attribute("href")
-                title = await link.inner_text()
+            # 페이지가 완전히 로드되도록 충분히 대기
+            await page.wait_for_load_state("networkidle")
+            
+            # 공지사항 목록의 링크 요소들을 안전하게 가져오기 위해 다양한 선택자 시도
+            # 게시판 내부의 상세 링크들을 포괄적으로 수집
+            elements = await page.locator("a[href*='/board/notice/view']").all()
+            
+            if not elements:
+                # 만약 일반 링크로 안 잡히면 전체 a 태그에서 필터링
+                elements = await page.locator("a").all()
+
+            for element in elements:
+                href = await element.get_attribute("href")
+                title = await element.inner_text()
                 title = title.strip()
                 
-                if href and 'view' in href and len(title) > 2:
+                if href and ('view' in href or 'notice' in href) and len(title) > 2:
                     if not href.startswith('http'):
                         href = 'https://aion2.plaync.com' + href
                     
+                    # 중복 제거 및 유효한 공지사항만 추가
                     if not any(n['link'] == href for n in notices):
                         notices.append({'title': title, 'link': href})
                         
