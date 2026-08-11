@@ -1,15 +1,18 @@
+import os
+import asyncio
+from threading import Thread
+from flask import Flask
+
 import discord
 from discord.ext import commands, tasks
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-# 무료 서버 유지용 Flask 웹서버 설정 (추가된 부분)
-from flask import Flask
-from threading import Thread
-
+# ---------------- [무료 서버 유지용 Flask 웹서버] ----------------
 app = Flask('')
 
 @app.route('/')
@@ -23,33 +26,26 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# ---------------- [디스코드 봇 설정] ----------------
-import os  # 맨 위 import 모듈 들 있는 곳에 추가해도 됩니다.
-
-# 토큰을 직접 적지 않고 Render의 환경 변수에서 안전하게 가져옵니다.
+# ---------------- [디스코드 봇 및 환경 설정] ----------------
 TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = 1536734023982911639
 
-# ✅ 1. bot 객체를 먼저 정의해 줍니다.
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ✅ 2. 그 다음에 @bot.event를 적어줍니다.
-@bot.event
-async def on_ready():
-    print(f"로그인 성공: {bot.user}")
-# ---------------------------------------------
-
 seen_article_ids = set()
 AION2_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
 
+# ---------------- [봇 이벤트] ----------------
 @bot.event
 async def on_ready():
     print(f"로그인 성공: {bot.user.name}")
     print("아이온2 알림 봇이 24시간 감지를 시작합니다. (5분 주기)")
-    check_aion2_updates.start()
+    if not check_aion2_updates.is_running():
+        check_aion2_updates.start()
 
+# ---------------- [봇 명령어] ----------------
 @bot.command()
 async def 안녕(ctx):
     await ctx.send("안녕하세요! 아이온2 업데이트 알림 봇입니다.")
@@ -57,7 +53,9 @@ async def 안녕(ctx):
 @bot.command()
 async def 확인(ctx):
     await ctx.send("아이온2 게시판에서 최근 글 목록을 확인하는 중입니다...")
-    articles = get_latest_articles()
+
+    # 비동기로 크롤링 실행 (봇 멈춤 방지)
+    articles = await asyncio.to_thread(get_latest_articles)
     if articles:
         for latest in articles[:3]:
             embed = discord.Embed(
@@ -73,6 +71,7 @@ async def 확인(ctx):
     else:
         await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다.")
 
+# ---------------- [크롤링 함수] ----------------
 def get_latest_articles():
     driver = None
     articles = []
@@ -134,6 +133,7 @@ def get_latest_articles():
 
     return articles
 
+# ---------------- [5분 주기 자동 체크 루프] ----------------
 @tasks.loop(minutes=5)
 async def check_aion2_updates():
     global seen_article_ids
@@ -142,7 +142,8 @@ async def check_aion2_updates():
     if not channel:
         return
 
-    articles = get_latest_articles()
+    # 비동기로 크롤링 실행 (Heartbeat 멈춤 차단)
+    articles = await asyncio.to_thread(get_latest_articles)
     if not articles:
         return
 
@@ -172,6 +173,6 @@ async def check_aion2_updates():
         await channel.send(embed=embed)
         print(f"새 업데이트 알림 전송 완료: {item['title']}")
 
-# 24시간 웹서버 실행 후 봇 가동 (수정된 맨 밑 부분)
+# ---------------- [실행] ----------------
 keep_alive()
 bot.run(TOKEN)
