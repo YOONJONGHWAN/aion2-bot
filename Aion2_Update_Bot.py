@@ -5,7 +5,6 @@ from threading import Thread
 import discord
 from discord.ext import tasks, commands
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
 
 # Flask 웹 서버 (Render 핑 유지용)
 app = Flask('')
@@ -26,7 +25,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Playwright + Stealth를 이용해 봇 탐지를 우회하며 공지사항 크롤링
+# Playwright를 이용해 공지사항 크롤링 (봇 탐지 우회 옵션 적용)
 async def get_latest_official_notices_via_playwright():
     notices = []
     async with async_playwright() as p:
@@ -38,16 +37,23 @@ async def get_latest_official_notices_via_playwright():
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled"
+                    "--disable-blink-features=AutomationControlled", # 봇 탐지 회피 핵심
+                    "--disable-infobars",
+                    "--window-size=1920,1080"
                 ]
             )
             
-            page = await browser.new_page(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            # 실제 사람처럼 보이도록 일반 브라우저 User-Agent 및 로캘 설정
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                locale="ko-KR",
+                timezone_id="Asia/Seoul"
             )
             
-            # 스텔스 모드 적용 (봇 탐지 우회)
-            await stealth_async(page)
+            page = await context.new_page()
+            
+            # navigator.webdriver 속성을 우회하여 봇 판정 회피
+            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
             # 페이지 이동
             await page.goto("https://aion2.plaync.com/ko-kr/board/notice/list", timeout=30000)
