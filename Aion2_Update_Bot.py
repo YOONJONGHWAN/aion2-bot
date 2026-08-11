@@ -28,12 +28,17 @@ import os  # 맨 위 import 모듈 들 있는 곳에 추가해도 됩니다.
 
 # 토큰을 직접 적지 않고 Render의 환경 변수에서 안전하게 가져옵니다.
 TOKEN = os.getenv("DISCORD_TOKEN")
-# [여기 추가!] 토큰이 정상적으로 들어왔는지 로그로 확인하는 코드
-if TOKEN:
-    print(f"✅ 환경 변수 로드 성공! (토큰 앞자리: {TOKEN[:10]}...)")
-else:
-    print("❌ 오류: DISCORD_TOKEN 환경 변수를 찾을 수 없습니다!")
-CHANNEL_ID = 1536734023982911639  # 채널 ID는 숫자 그대로 두시면 됩니다.
+CHANNEL_ID = 1536734023982911639
+
+# ✅ 1. bot 객체를 먼저 정의해 줍니다.
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ✅ 2. 그 다음에 @bot.event를 적어줍니다.
+@bot.event
+async def on_ready():
+    print(f"로그인 성공: {bot.user}")
 # ---------------------------------------------
 
 seen_article_ids = set()
