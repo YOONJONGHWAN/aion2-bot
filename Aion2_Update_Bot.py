@@ -5,6 +5,7 @@ from threading import Thread
 import discord
 from discord.ext import tasks, commands
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 # Flask 웹 서버 (Render 핑 유지용)
 app = Flask('')
@@ -25,7 +26,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Playwright를 이용해 실제 브라우저로 아이온2 공지사항 크롤링
+# Playwright + Stealth를 이용해 봇 탐지를 우회하며 공지사항 크롤링
 async def get_latest_official_notices_via_playwright():
     notices = []
     async with async_playwright() as p:
@@ -33,26 +34,33 @@ async def get_latest_official_notices_via_playwright():
             browser = await p.chromium.launch(
                 executable_path="/opt/render/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome",
                 headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled"
+                ]
             )
             
             page = await browser.new_page(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             
+            # 스텔스 모드 적용 (봇 탐지 우회)
+            await stealth_async(page)
+            
             # 페이지 이동
             await page.goto("https://aion2.plaync.com/ko-kr/board/notice/list", timeout=30000)
             
-            # 자바스크립트가 데이터를 로드할 때까지 충분히 대기 (최대 10초)
+            # 데이터 로드 대기
             try:
                 await page.wait_for_selector("a[href*='view']", timeout=10000)
             except:
                 pass
             
-            # 추가적으로 3초간 렌더링 대기
             await asyncio.sleep(3)
             
-            # 게시판 내부의 링크들을 모두 가져옴
+            # 게시판 링크 수집
             elements = await page.query_selector_all("a")
             
             for element in elements:
@@ -60,12 +68,10 @@ async def get_latest_official_notices_via_playwright():
                 title = await element.inner_text()
                 title = title.strip()
                 
-                # 공지사항 상세 페이지 링크 패턴 필터링
                 if href and ('/board/notice/view' in href or 'view' in href) and len(title) > 2:
                     if not href.startswith('http'):
                         href = 'https://aion2.plaync.com' + href
                     
-                    # 중복 제거 및 추가
                     if not any(n['link'] == href for n in notices):
                         notices.append({'title': title, 'link': href})
                         
