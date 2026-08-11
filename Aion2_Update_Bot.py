@@ -67,56 +67,45 @@ async def 확인(ctx):
         await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다.")
 
 # ---------------- [초고속 크롤링 함수 (requests + BeautifulSoup)] ----------------
+# ---------------- [초고속 API 크롤링 함수] ----------------
 def get_latest_articles():
     articles = []
+    # PlayNC 게시판 API 주소 (CM 스토리 목록)
+    api_url = "https://aion2.plaync.com/api/board/cm_story/list?page=1&size=5"
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://aion2.plaync.com/ko-kr/board/cm_story/list"
     }
     
     try:
-        response = requests.get(AION2_URL, headers=headers, timeout=10)
-        if response.status_code != 200:
-            return articles
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-        elements = soup.find_all('a')
-
-        for elem in elements:
-            href = elem.get('href', '')
-            if href and ("/board/cm_story/view" in href or "articleId=" in href):
-                # 절대 경로 URL 생성
-                if not href.startswith('http'):
-                    href = f"https://aion2.plaync.com{href}"
-
-                title = elem.get_text(strip=True)
-                if not title:
-                    title = "아이온2 최신 소식"
-
-                if "articleId=" in href:
-                    article_id = href.split("articleId=")[-1].split("&")[0]
-                else:
-                    article_id = href.rstrip("/").split("/")[-1]
-
-                img_url = None
-                img_elem = elem.find('img')
-                if img_elem and img_elem.get('src'):
-                    img_url = img_elem.get('src')
-                    if not img_url.startswith('http'):
-                        img_url = f"https://aion2.plaync.com{img_url}"
-
-                if not any(a["id"] == article_id for a in articles):
-                    articles.append({
-                        "id": article_id,
-                        "title": title,
-                        "link": href,
-                        "image": img_url
-                    })
-
-                if len(articles) >= 5:
-                    break
+        response = requests.get(api_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            # API 응답 구조에 맞춰 게시글 목록 추출
+            posts = data.get("list", []) or data.get("data", []) or []
+            
+            for post in posts:
+                article_id = str(post.get("articleId") or post.get("id"))
+                title = post.get("title", "아이온2 최신 소식")
+                
+                # 게시글 링크 생성
+                link = f"https://aion2.plaync.com/ko-kr/board/cm_story/view?articleId={article_id}"
+                
+                # 이미지 추출
+                img_url = post.get("thumbnail") or post.get("imageUrl") or post.get("image")
+                
+                articles.append({
+                    "id": article_id,
+                    "title": title,
+                    "link": link,
+                    "image": img_url
+                })
+        else:
+            print(f"API 요청 실패 응답 코드: {response.status_code}")
 
     except Exception as e:
-        print(f"크롤링 중 에러 발생: {e}")
+        print(f"API 크롤링 중 에러 발생: {e}")
 
     return articles
 
