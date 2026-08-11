@@ -39,19 +39,22 @@ async def get_latest_official_notices_with_browser():
             
             target_url = "https://aion2.plaync.com/ko-kr/board/notice/list" 
             await page.goto(target_url, timeout=60000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(3000)  # 페이지 로딩 대기
             
             content = await page.content()
             await browser.close()
             
             soup = BeautifulSoup(content, 'html.parser')
-            items = soup.select('.board-list-item, .notice-item, li')
             
-            for item in items[:5]:
-                title_elem = item.select_one('.title, a')
-                if title_elem:
-                    title = title_elem.get_text(strip=True)
-                    link = title_elem.get('href', '')
+            # 알려주신 구조(a.title)에 맞춰 정확하게 선택
+            items = soup.select('a.title')
+            
+            for item in items[:5]:  # 상위 5개 가져오기
+                title = item.get_text(strip=True)
+                link = item.get('href', '')
+                
+                if title:
+                    # 상대 경로일 경우 도메인 붙여주기
                     if link and not link.startswith('http'):
                         link = "https://aion2.plaync.com" + link
                     notices.append({"title": title, "link": link})
@@ -61,6 +64,7 @@ async def get_latest_official_notices_with_browser():
         
     return notices
 
+# 디스코드 봇 준비 완료 이벤트
 @bot.event
 async def on_ready():
     print(f'로그인 완료: {bot.user.name} (ID: {bot.user.id})')
@@ -68,6 +72,7 @@ async def on_ready():
     if not check_aion2_updates.is_running():
         check_aion2_updates.start()
 
+# 수동 확인 명령어 (!확인)
 @bot.command(name='확인')
 async def manual_check(ctx):
     await ctx.send("🔍 아이온2 최신 공지사항을 확인하는 중입니다...")
@@ -83,6 +88,7 @@ async def manual_check(ctx):
         
     await ctx.send(msg)
 
+# 일정 주기마다 자동으로 공지 확인 (예: 30분 마다)
 @tasks.loop(minutes=30)
 async def check_aion2_updates():
     print("자동 공지 확인 중...")
@@ -90,8 +96,8 @@ async def check_aion2_updates():
     if notices:
         pass
 
+# 봇 실행
 if __name__ == "__main__":
-    # ⚠️ 원래 사용하시던 DISCORD_TOKEN 환경 변수 이름으로 원복했습니다.
     TOKEN = os.environ.get("DISCORD_TOKEN")
     if not TOKEN:
         print("Error: DISCORD_TOKEN 환경 변수가 설정되지 않았습니다.")
