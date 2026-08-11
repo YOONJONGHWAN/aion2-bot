@@ -47,7 +47,7 @@ async def 안녕(ctx):
 @bot.command()
 async def 확인(ctx):
     print("[디버그] '!확인' 명령어 수신됨!")
-    await ctx.send("아이온2 게시판에서 최근 글 목록을 확인하는 중입니다...")
+    await ctx.send("네이버 뉴스 및 공식 소식을 확인하는 중입니다...")
 
     articles = await get_latest_articles()
     if articles:
@@ -55,67 +55,62 @@ async def 확인(ctx):
             embed = discord.Embed(
                 title=f"📢 {latest['title']}",
                 url=latest['link'],
-                description="클릭하면 아이온2 공식 홈페이지 게시글로 이동합니다.",
+                description="클릭하면 관련 기사 및 공식 소식으로 이동합니다.",
                 color=0x3498db
             )
-            if latest.get('image'):
-                embed.set_image(url=latest['image'])
-            embed.set_footer(text="Aion2 Notification Bot • 공식 CM 스토리")
+            embed.set_footer(text="Aion2 Notification Bot • 네이버 검색 연동")
             await ctx.send(embed=embed)
     else:
         await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다. (Render 로그를 확인해 주세요)")
 
-# ---------------- [API 크롤링 함수] ----------------
+# ---------------- [안정적인 네이버 검색 크롤링 함수] ----------------
 async def get_latest_articles():
     articles = []
     
-    # 플레이엔씨 공식 API 헤더 설정 (실제 브라우저 모방)
+    # 네이버 공개 검색 URL을 통한 안정적인 수집 (차단 없음)
+    search_url = "https://search.naver.com/search.naver?where=news&query=아이온2"
+    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-        "Referer": "https://aion2.plaync.com/"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
 
     timeout = aiohttp.ClientTimeout(total=7)
 
-    # 파이썬/웹서버에서 접근 가능한 플레이엔씨 공식 공지/스토리 API 주소 구조 예시
-    # (공식 홈페이지 구조에 맞춘 엔드포인트)
-    api_url = "https://aion2.plaync.com/api/board/cm_story/list?page=1"
-
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         try:
-            print("[디버그] 플레이엔씨 API 요청 시작...")
-            async with session.get(api_url) as resp:
+            print("[디버그] 네이버 검색 요청 시작...")
+            async with session.get(search_url) as resp:
                 print(f"[디버그] 응답 상태 코드: {resp.status}")
                 if resp.status == 200:
-                    data = await resp.json()
-                    # JSON 내부에서 게시글 목록 추출 (구조에 따라 상이할 수 있음)
-                    item_list = data.get("result", {}).get("list", []) or data.get("list", [])
+                    from bs4 import BeautifulSoup
+                    html_text = await resp.text()
+                    soup = BeautifulSoup(html_text, "html.parser")
                     
-                    for item in item_list:
-                        article_id = str(item.get("articleId") or item.get("id", ""))
-                        title = item.get("title", "")
+                    # 뉴스 제목과 링크 태그 추출
+                    news_items = soup.select("a.news_tit")
+                    for item in news_items:
+                        title = item.get("title") or item.get_text(strip=True)
+                        link = item.get("href")
                         
-                        if not article_id or not title:
+                        if not title or not link:
                             continue
                             
-                        link = f"https://aion2.plaync.com/ko-kr/board/cm_story/view?articleId={article_id}"
-                        image = item.get("thumbnailUrl") or item.get("imageUrl")
+                        # 고유 ID 생성 (링크 주소 활용)
+                        article_id = link
                         
-                        articles.append({
-                            "id": article_id,
-                            "title": title,
-                            "link": link,
-                            "image": image
-                        })
+                        if not any(item["id"] == article_id for item in articles):
+                            articles.append({
+                                "id": article_id,
+                                "title": title,
+                                "link": link
+                            })
                     
-                    print(f"[디버그] API로 수집된 게시글 수: {len(articles)}")
+                    print(f"[디버그] 수집된 소식 수: {len(articles)}")
                     return articles
                 else:
-                    print(f"[디버그] API 응답 실패: {resp.status}")
+                    print(f"[디버그] 응답 실패: {resp.status}")
         except Exception as e:
-            print(f"[디버그] API 요청 중 예외 발생: {e}")
+            print(f"[디버그] 예외 발생: {e}")
 
     return articles
 
@@ -135,7 +130,7 @@ async def check_aion2_updates():
     if not seen_article_ids:
         for item in articles:
             seen_article_ids.add(item["id"])
-        print(f"기준 게시글 목록 설정 완료: {seen_article_ids}")
+        print(f"기준 게시글 목록 설정 완료: {len(seen_article_ids)}개")
         return
 
     new_articles = [item for item in articles if item["id"] not in seen_article_ids]
@@ -146,7 +141,7 @@ async def check_aion2_updates():
         embed = discord.Embed(
             title=f"📢 [아이온2 새 소식] {item['title']}",
             url=item["link"],
-            description="아이온2 공식 홈페이지에 새로운 게시글이 등록되었습니다!",
+            description="새로운 아이온2 관련 소식이 등록되었습니다!",
             color=0x00a8ff
         )
         embed.set_footer(text="Aion2 Notification Bot")
