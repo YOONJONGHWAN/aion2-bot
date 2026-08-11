@@ -40,29 +40,32 @@ async def get_latest_official_notices_via_playwright():
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             )
             
+            # 페이지 이동
             await page.goto("https://aion2.plaync.com/ko-kr/board/notice/list", timeout=30000)
             
-            # 페이지가 완전히 로드되도록 충분히 대기
-            await page.wait_for_load_state("networkidle")
+            # 자바스크립트가 데이터를 로드할 때까지 충분히 대기 (최대 10초)
+            try:
+                await page.wait_for_selector("a[href*='view']", timeout=10000)
+            except:
+                pass
             
-            # 공지사항 목록의 링크 요소들을 안전하게 가져오기 위해 다양한 선택자 시도
-            # 게시판 내부의 상세 링크들을 포괄적으로 수집
-            elements = await page.locator("a[href*='/board/notice/view']").all()
+            # 추가적으로 3초간 렌더링 대기
+            await asyncio.sleep(3)
             
-            if not elements:
-                # 만약 일반 링크로 안 잡히면 전체 a 태그에서 필터링
-                elements = await page.locator("a").all()
-
+            # 게시판 내부의 링크들을 모두 가져옴
+            elements = await page.query_selector_all("a")
+            
             for element in elements:
                 href = await element.get_attribute("href")
                 title = await element.inner_text()
                 title = title.strip()
                 
-                if href and ('view' in href or 'notice' in href) and len(title) > 2:
+                # 공지사항 상세 페이지 링크 패턴 필터링
+                if href and ('/board/notice/view' in href or 'view' in href) and len(title) > 2:
                     if not href.startswith('http'):
                         href = 'https://aion2.plaync.com' + href
                     
-                    # 중복 제거 및 유효한 공지사항만 추가
+                    # 중복 제거 및 추가
                     if not any(n['link'] == href for n in notices):
                         notices.append({'title': title, 'link': href})
                         
