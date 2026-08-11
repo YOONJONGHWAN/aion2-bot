@@ -4,7 +4,6 @@ from flask import Flask
 from threading import Thread
 import discord
 from discord.ext import tasks, commands
-from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
 # Flask 웹 서버 (Render 핑 유지용)
@@ -26,7 +25,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# 공지사항을 크롤링하는 비동기 함수 (Playwright 사용)
+# 공지사항을 크롤링하는 비동기 함수 (Playwright 사용 - 유연한 수집 방식)
 async def get_latest_official_notices_with_browser():
     notices = []
     try:
@@ -53,25 +52,27 @@ async def get_latest_official_notices_with_browser():
             target_url = "https://aion2.plaync.com/ko-kr/board/notice/list" 
             await page.goto(target_url, timeout=60000)
             
-            # 페이지가 완전히 렌더링되도록 6초 대기
-            await page.wait_for_timeout(6000)
+            # 충분한 렌더링 대기 시간 (8초)
+            await page.wait_for_timeout(8000)
             
-            # 자바스크립트로 공지사항 게시글 링크와 제목을 안전하게 추출
+            # 페이지 내 모든 a 태그를 검사하여 공지사항 성격의 링크 수집
             notices = await page.evaluate('''() => {
                 const results = [];
-                const links = document.querySelectorAll('a[href*="/board/notice/view"]');
+                const anchors = document.querySelectorAll('a');
                 
-                links.forEach(el => {
+                anchors.forEach(el => {
+                    let href = el.getAttribute('href');
                     let title = el.innerText.trim();
-                    let link = el.getAttribute('href');
                     
-                    if (title && title.length > 1) {
-                        if (link && !link.startsWith('http')) {
-                            link = 'https://aion2.plaync.com' + link;
+                    // 링크에 notice가 포함되어 있고, 텍스트가 일정 길이 이상인 경우
+                    if (href && href.includes('notice') && title && title.length > 2) {
+                        if (!href.startsWith('http')) {
+                            href = 'https://aion2.plaync.com' + href;
                         }
                         
-                        if (!results.some(item => item.link === link)) {
-                            results.push({ title: title, link: link });
+                        // 중복 방지 및 네비게이션 메뉴 제외
+                        if (!results.some(item => item.link === href) && !title.includes('목록') && !title.includes('홈')) {
+                            results.push({ title: title, link: href });
                         }
                     }
                 });
