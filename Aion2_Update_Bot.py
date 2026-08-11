@@ -1,5 +1,6 @@
 import os
 import asyncio
+import subprocess
 from threading import Thread
 from flask import Flask
 import discord
@@ -30,21 +31,29 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # AION2 CM 스토리 게시판 목록 페이지 URL
 TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
 
-# 3. Playwright 크롤링 함수
+# 3. Playwright 크롤링 함수 (브라우저 유실 시 자동 재설치 로직 포함)
 async def fetch_latest_post():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process"
-            ]
-        )
+        browser_args = [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-first-run",
+            "--no-zygote",
+            "--single-process"
+        ]
+        
+        try:
+            browser = await p.chromium.launch(headless=True, args=browser_args)
+        except Exception as launch_err:
+            # 브라우저 실행 파일이 없는 에러 발생 시 즉시 감지 후 자동 설치
+            if "Executable doesn't exist" in str(launch_err):
+                print("[INFO] 크롬 브라우저 실행 파일이 없어 자동 설치를 진행합니다...")
+                subprocess.run(["playwright", "install", "chromium"])
+                browser = await p.chromium.launch(headless=True, args=browser_args)
+            else:
+                raise launch_err
         
         context = await browser.new_context(
             user_agent=(
@@ -61,7 +70,7 @@ async def fetch_latest_post():
             # 페이지 이동 (최대 60초 대기)
             await page.goto(TARGET_URL, timeout=60000, wait_until="domcontentloaded")
             
-            # 동적 게시판 로딩 대기: class="title"인 a 태그가 등장할 때까지 최대 15초 대기
+            # 동적 게시판 로딩 대기 (class="title"인 a 태그)
             await page.wait_for_selector('a.title', timeout=15000)
             
             # 가장 첫 번째 게시글(최신글) 요소 가져오기
@@ -71,7 +80,6 @@ async def fetch_latest_post():
                 title = await title_element.inner_text()
                 link = await title_element.get_attribute('href')
                 
-                # 상대 경로 링크 처리 (예: /ko-kr/board/...)
                 if link and link.startswith('/'):
                     link = "https://aion2.plaync.com" + link
                     
