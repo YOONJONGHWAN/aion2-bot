@@ -31,7 +31,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 seen_article_ids = set()
-AION2_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
 
 # ---------------- [봇 이벤트] ----------------
 @bot.event
@@ -64,48 +63,87 @@ async def 확인(ctx):
             embed.set_footer(text="Aion2 Notification Bot • 공식 CM 스토리")
             await ctx.send(embed=embed)
     else:
-        await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다.")
+        await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다. (Render 로그를 확인해 주세요)")
 
-# ---------------- [초고속 크롤링 함수 (requests + BeautifulSoup)] ----------------
-# ---------------- [초고속 API 크롤링 함수] ----------------
+# ---------------- [개선된 크롤링 함수] ----------------
 def get_latest_articles():
     articles = []
-    # PlayNC 게시판 API 주소 (CM 스토리 목록)
-    api_url = "https://aion2.plaync.com/api/board/cm_story/list?page=1&size=5"
     
+    # 브라우저처럼 보이도록 Header 보완
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://aion2.plaync.com/ko-kr/board/cm_story/list"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://aion2.plaync.com/ko-kr/board/cm_story/list",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
     }
-    
+
+    # 1 시도: 공식 API 호출
+    api_url = "https://aion2.plaync.com/api/board/cm_story/list?page=1&size=5"
     try:
         response = requests.get(api_url, headers=headers, timeout=10)
+        print(f"[디버그] API 응답 코드: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
-            # API 응답 구조에 맞춰 게시글 목록 추출
-            posts = data.get("list", []) or data.get("data", []) or []
-            
-            for post in posts:
-                article_id = str(post.get("articleId") or post.get("id"))
-                title = post.get("title", "아이온2 최신 소식")
-                
-                # 게시글 링크 생성
-                link = f"https://aion2.plaync.com/ko-kr/board/cm_story/view?articleId={article_id}"
-                
-                # 이미지 추출
-                img_url = post.get("thumbnail") or post.get("imageUrl") or post.get("image")
-                
-                articles.append({
-                    "id": article_id,
-                    "title": title,
-                    "link": link,
-                    "image": img_url
-                })
-        else:
-            print(f"API 요청 실패 응답 코드: {response.status_code}")
+            # API 응답 객체 구조 유연하게 탐색
+            posts = []
+            if isinstance(data, dict):
+                posts = data.get("list") or data.get("data") or data.get("contents") or []
+            elif isinstance(data, list):
+                posts = data
 
+            for post in posts:
+                article_id = str(post.get("articleId") or post.get("id") or post.get("boardId"))
+                title = post.get("title") or post.get("subject") or "아이온2 최신 소식"
+                
+                # HTML 태그 제거
+                soup = BeautifulSoup(title, "html.parser")
+                title = soup.get_text()
+
+                link = f"https://aion2.plaync.com/ko-kr/board/cm_story/view?articleId={article_id}"
+                img_url = post.get("thumbnail") or post.get("imageUrl") or post.get("image") or post.get("representImage")
+
+                if article_id and article_id != "None":
+                    articles.append({
+                        "id": article_id,
+                        "title": title,
+                        "link": link,
+                        "image": img_url
+                    })
+            
+            if articles:
+                return articles
     except Exception as e:
-        print(f"API 크롤링 중 에러 발생: {e}")
+        print(f"[디버그] API 호출 에러: {e}")
+
+    # 2 시도: HTML 직접 파싱 (API 실패 시 백업)
+    try:
+        web_url = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
+        res = requests.get(web_url, headers=headers, timeout=10)
+        print(f"[디버그] HTML 응답 코드: {res.status_code}")
+        
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, "html.parser")
+            links = soup.find_all("a")
+            for a in links:
+                href = a.get("href", "")
+                if "articleId=" in href:
+                    article_id = href.split("articleId=")[-1].split("&")[0]
+                    title = a.get_text(strip=True) or "아이온2 최신 소식"
+                    full_link = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
+                    
+                    img_elem = a.find("img")
+                    img_url = img_elem.get("src") if img_elem else None
+                    
+                    if not any(item["id"] == article_id for item in articles):
+                        articles.append({
+                            "id": article_id,
+                            "title": title,
+                            "link": full_link,
+                            "image": img_url
+                        })
+    except Exception as e:
+        print(f"[디버그] HTML 파싱 에러: {e}")
 
     return articles
 
