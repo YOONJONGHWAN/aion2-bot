@@ -1,6 +1,7 @@
 import os
 import asyncio
 import aiohttp
+import xml.etree.ElementTree as ET
 from threading import Thread
 from flask import Flask
 
@@ -47,7 +48,7 @@ async def 안녕(ctx):
 @bot.command()
 async def 확인(ctx):
     print("[디버그] '!확인' 명령어 수신됨!")
-    await ctx.send("네이버 뉴스 및 공식 소식을 확인하는 중입니다...")
+    await ctx.send("구글 뉴스 RSS에서 아이온2 소식을 확인하는 중입니다...")
 
     articles = await get_latest_articles()
     if articles:
@@ -55,62 +56,60 @@ async def 확인(ctx):
             embed = discord.Embed(
                 title=f"📢 {latest['title']}",
                 url=latest['link'],
-                description="클릭하면 관련 기사 및 공식 소식으로 이동합니다.",
+                description="클릭하면 관련 소식 페이지로 이동합니다.",
                 color=0x3498db
             )
-            embed.set_footer(text="Aion2 Notification Bot • 네이버 검색 연동")
+            embed.set_footer(text="Aion2 Notification Bot • 구글 뉴스 RSS 연동")
             await ctx.send(embed=embed)
     else:
-        await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다. (Render 로그를 확인해 주세요)")
+        await ctx.send("가져온 소식이 없습니다. 잠시 후 다시 시도해 주세요.")
 
-# ---------------- [안정적인 네이버 검색 크롤링 함수] ----------------
+# ---------------- [구글 뉴스 RSS 크롤링 함수 (차단 없음)] ----------------
 async def get_latest_articles():
     articles = []
     
-    # 네이버 공개 검색 URL을 통한 안정적인 수집 (차단 없음)
-    search_url = "https://search.naver.com/search.naver?where=news&query=아이온2"
+    # 구글 뉴스 RSS (아이온2 검색 결과 고속 피드)
+    rss_url = "https://news.google.com/rss/search?q=%EC%95%84%EC%9D%B4%EC%98%A82&hl=ko&gl=KR&ceid=KR:ko"
     
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
     timeout = aiohttp.ClientTimeout(total=7)
 
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         try:
-            print("[디버그] 네이버 검색 요청 시작...")
-            async with session.get(search_url) as resp:
+            print("[디버그] 구글 뉴스 RSS 요청 시작...")
+            async with session.get(rss_url) as resp:
                 print(f"[디버그] 응답 상태 코드: {resp.status}")
                 if resp.status == 200:
-                    from bs4 import BeautifulSoup
-                    html_text = await resp.text()
-                    soup = BeautifulSoup(html_text, "html.parser")
+                    xml_data = await resp.text()
                     
-                    # 뉴스 제목과 링크 태그 추출
-                    news_items = soup.select("a.news_tit")
-                    for item in news_items:
-                        title = item.get("title") or item.get_text(strip=True)
-                        link = item.get("href")
+                    # XML 파싱
+                    root = ET.fromstring(xml_data)
+                    items = root.findall(".//item")
+                    
+                    for item in items:
+                        title = item.find("title").text if item.find("title") is not None else ""
+                        link = item.find("link").text if item.find("link") is not None else ""
+                        guid = item.find("guid").text if item.find("guid") is not None else link
                         
                         if not title or not link:
                             continue
                             
-                        # 고유 ID 생성 (링크 주소 활용)
-                        article_id = link
-                        
-                        if not any(item["id"] == article_id for item in articles):
+                        if not any(a["id"] == guid for a in articles):
                             articles.append({
-                                "id": article_id,
+                                "id": guid,
                                 "title": title,
                                 "link": link
                             })
                     
-                    print(f"[디버그] 수집된 소식 수: {len(articles)}")
+                    print(f"[디버그] 수집된 RSS 소식 수: {len(articles)}")
                     return articles
                 else:
-                    print(f"[디버그] 응답 실패: {resp.status}")
+                    print(f"[디버그] RSS 응답 실패: {resp.status}")
         except Exception as e:
-            print(f"[디버그] 예외 발생: {e}")
+            print(f"[디버그] RSS 예외 발생: {e}")
 
     return articles
 
