@@ -1,5 +1,4 @@
 discord.py
-selenium
-webdriver-manager
 requests
+beautifulsoup4
 flask
