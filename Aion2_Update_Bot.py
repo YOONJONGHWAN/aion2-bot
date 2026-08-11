@@ -31,22 +31,34 @@ async def get_latest_official_notices_with_browser():
     notices = []
     try:
         async with async_playwright() as p:
+            # 봇 감지를 피하기 위한 인자 추가
             browser = await p.chromium.launch(
                 headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+                args=[
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled', # 자동화 감지 우회
+                    '--disable-infobars',
+                    '--window-size=1920,1080'
+                ]
             )
-            page = await browser.new_page()
+            
+            # 실제 사용자인 것처럼 유저 아이언(User-Agent) 설정
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080}
+            )
+            
+            page = await context.new_page()
             
             target_url = "https://aion2.plaync.com/ko-kr/board/notice/list" 
             await page.goto(target_url, timeout=60000)
             
-            # 요소가 나타날 때까지 대기
-            try:
-                await page.wait_for_selector('a.title', timeout=10000)
-            except:
-                await page.wait_for_timeout(3000)
+            # 충분한 로딩 대기 시간 부여
+            await page.wait_for_timeout(5000)
             
-            # 브라우저 내부에서 직접 자바스크립트로 데이터 수집 (가장 확실함)
+            # 브라우저 내부에서 데이터 수집
             notices = await page.evaluate('''() => {
                 const elements = document.querySelectorAll('a.title');
                 const results = [];
