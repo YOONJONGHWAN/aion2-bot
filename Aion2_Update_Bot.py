@@ -4,14 +4,15 @@ from flask import Flask
 from threading import Thread
 import discord
 from discord.ext import tasks, commands
-from playwright.async_api import async_playwright
+import requests
+from bs4 import BeautifulSoup
 
 # Flask 웹 서버 (Render 핑 유지용)
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Aion2 Update Bot is running!"
+    return "Aion2 API Bot is running!"
 
 def run_flask():
     app.run(host='0.0.0.0', port=8080)
@@ -25,67 +26,40 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Playwright를 이용해 공지사항 크롤링 (봇 탐지 우회 옵션 적용)
-async def get_latest_official_notices_via_playwright():
+# 공지사항을 직접 HTML 파싱 또는 API로 가져오는 함수
+def fetch_aion2_notices():
     notices = []
-    async with async_playwright() as p:
-        try:
-            browser = await p.chromium.launch(
-                executable_path="/opt/render/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome",
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled", # 봇 탐지 회피 핵심
-                    "--disable-infobars",
-                    "--window-size=1920,1080"
-                ]
-            )
+    try:
+        # 실제 브라우저처럼 보이게 헤더 장착
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+            "Referer": "https://aion2.plaync.com/"
+        }
+        
+        url = "https://aion2.plaync.com/ko-kr/board/notice/list"
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 실제 사람처럼 보이도록 일반 브라우저 User-Agent 및 로캘 설정
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                locale="ko-KR",
-                timezone_id="Asia/Seoul"
-            )
-            
-            page = await context.new_page()
-            
-            # navigator.webdriver 속성을 우회하여 봇 판정 회피
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
-            # 페이지 이동
-            await page.goto("https://aion2.plaync.com/ko-kr/board/notice/list", timeout=30000)
-            
-            # 데이터 로드 대기
-            try:
-                await page.wait_for_selector("a[href*='view']", timeout=10000)
-            except:
-                pass
-            
-            await asyncio.sleep(3)
-            
-            # 게시판 링크 수집
-            elements = await page.query_selector_all("a")
-            
-            for element in elements:
-                href = await element.get_attribute("href")
-                title = await element.inner_text()
-                title = title.strip()
+            # 페이지 내의 모든 a 태그 중 공지사항 링크 패턴 탐색
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                title = a.get_text().strip()
                 
-                if href and ('/board/notice/view' in href or 'view' in href) and len(title) > 2:
+                # 공지 상세 페이지 링크 조건 필터링
+                if ('/board/notice/view' in href or 'view' in href) and len(title) > 2:
                     if not href.startswith('http'):
                         href = 'https://aion2.plaync.com' + href
                     
                     if not any(n['link'] == href for n in notices):
                         notices.append({'title': title, 'link': href})
                         
-            notices = notices[:5]
-            await browser.close()
-        except Exception as e:
-            print(f"Playwright 크롤링 에러 발생: {e}")
-            
+        notices = notices[:5]
+    except Exception as e:
+        print(f"데이터 수신 에러: {e}")
+        
     return notices
 
 # 디스코드 봇 준비 완료 이벤트
@@ -101,7 +75,8 @@ async def on_ready():
 async def manual_check(ctx):
     await ctx.send("🔍 아이온2 최신 공지사항을 확인하는 중입니다...")
     
-    notices = await get_latest_official_notices_via_playwright()
+    # requests는 동기 방식이므로 비동기 스레드로 실행하거나 바로 호출
+    notices = await asyncio.to_thread(fetch_aion2_notices)
     
     if not notices:
         await ctx.send("❌ 공지사항을 불러오지 못했거나 가져올 수 있는 항목이 없습니다.")
@@ -113,13 +88,11 @@ async def manual_check(ctx):
         
     await ctx.send(msg)
 
-# 5분 주기로 자동으로 공지 확인
+# 5분 주기로 자동 확인
 @tasks.loop(minutes=5)
 async def check_aion2_updates():
     print("자동 공지 확인 중 (5분 주기)...")
-    notices = await get_latest_official_notices_via_playwright()
-    if notices:
-        pass
+    await asyncio.to_thread(fetch_aion2_notices)
 
 # 봇 실행
 if __name__ == "__main__":
