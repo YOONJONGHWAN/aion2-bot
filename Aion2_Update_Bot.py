@@ -31,20 +31,18 @@ async def get_latest_official_notices_with_browser():
     notices = []
     try:
         async with async_playwright() as p:
-            # 봇 감지를 피하기 위한 인자 추가
             browser = await p.chromium.launch(
                 headless=True,
                 args=[
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--disable-blink-features=AutomationControlled', # 자동화 감지 우회
+                    '--disable-blink-features=AutomationControlled',
                     '--disable-infobars',
                     '--window-size=1920,1080'
                 ]
             )
             
-            # 실제 사용자인 것처럼 유저 아이언(User-Agent) 설정
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 viewport={"width": 1920, "height": 1080}
@@ -55,28 +53,33 @@ async def get_latest_official_notices_with_browser():
             target_url = "https://aion2.plaync.com/ko-kr/board/notice/list" 
             await page.goto(target_url, timeout=60000)
             
-            # 충분한 로딩 대기 시간 부여
-            await page.wait_for_timeout(5000)
+            # 페이지가 완전히 렌더링되도록 6초 대기
+            await page.wait_for_timeout(6000)
             
-            # 브라우저 내부에서 데이터 수집
+            # 자바스크립트로 공지사항 게시글 링크와 제목을 안전하게 추출
             notices = await page.evaluate('''() => {
-                const elements = document.querySelectorAll('a.title');
                 const results = [];
-                elements.forEach(el => {
+                const links = document.querySelectorAll('a[href*="/board/notice/view"]');
+                
+                links.forEach(el => {
                     let title = el.innerText.trim();
                     let link = el.getAttribute('href');
-                    if (title) {
+                    
+                    if (title && title.length > 1) {
                         if (link && !link.startsWith('http')) {
                             link = 'https://aion2.plaync.com' + link;
                         }
-                        results.push({ title: title, link: link });
+                        
+                        if (!results.some(item => item.link === link)) {
+                            results.push({ title: title, link: link });
+                        }
                     }
                 });
                 return results;
             }''')
             
             await browser.close()
-            notices = notices[:5]  # 상위 5개만 자르기
+            notices = notices[:5]  # 상위 5개만 추출
                     
     except Exception as e:
         print(f"크롤링 중 에러 발생: {e}")
