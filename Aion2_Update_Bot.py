@@ -70,10 +70,9 @@ async def get_latest_official_notices_with_browser():
     target_url = "https://aion2.plaync.com/ko-kr/board/notice/list"
 
     async with async_playwright() as p:
-# Render 서버 환경에서 안정적으로 동작하도록 가벼운 설정 추가
+        # Render 서버 환경에서 안정적으로 동작하도록 가벼운 설정 추가 (executable_path 제거 및 환경 변수 활용)
         browser = await p.chromium.launch(
             headless=True,
-            executable_path="/opt/render/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome", # 이 줄을 추가하세요!
             args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
