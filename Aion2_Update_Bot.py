@@ -1,16 +1,12 @@
 import os
 import asyncio
+import requests
+from bs4 import BeautifulSoup
 from threading import Thread
 from flask import Flask
 
 import discord
 from discord.ext import commands, tasks
-
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 # ---------------- [무료 서버 유지용 Flask 웹서버] ----------------
 app = Flask('')
@@ -54,7 +50,6 @@ async def 안녕(ctx):
 async def 확인(ctx):
     await ctx.send("아이온2 게시판에서 최근 글 목록을 확인하는 중입니다...")
 
-    # 비동기로 크롤링 실행 (봇 멈춤 방지)
     articles = await asyncio.to_thread(get_latest_articles)
     if articles:
         for latest in articles[:3]:
@@ -71,65 +66,57 @@ async def 확인(ctx):
     else:
         await ctx.send("게시글을 가져오는 데 실패했거나 글이 없습니다.")
 
-# ---------------- [크롤링 함수] ----------------
+# ---------------- [초고속 크롤링 함수 (requests + BeautifulSoup)] ----------------
 def get_latest_articles():
-    driver = None
     articles = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
     try:
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        response = requests.get(AION2_URL, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return articles
 
-        driver = webdriver.Chrome(options=chrome_options)
-        driver.get(AION2_URL)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        elements = soup.find_all('a')
 
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "a"))
-        )
-
-        elements = driver.find_elements(By.TAG_NAME, "a")
         for elem in elements:
-            try:
-                href = elem.get_attribute("href")
-                if href and ("/board/cm_story/view" in href or "articleId=" in href):
-                    title = elem.get_attribute("innerText") or elem.text
-                    title = title.strip().replace("\n", " ")
-                    
-                    if "articleId=" in href:
-                        article_id = href.split("articleId=")[-1].split("&")[0]
-                    else:
-                        article_id = href.rstrip("/").split("/")[-1]
+            href = elem.get('href', '')
+            if href and ("/board/cm_story/view" in href or "articleId=" in href):
+                # 절대 경로 URL 생성
+                if not href.startswith('http'):
+                    href = f"https://aion2.plaync.com{href}"
 
-                    if not title or title == "":
-                        title = "아이온2 최신 소식"
+                title = elem.get_text(strip=True)
+                if not title:
+                    title = "아이온2 최신 소식"
 
-                    img_url = None
-                    try:
-                        img_elem = elem.find_element(By.TAG_NAME, "img")
-                        img_url = img_elem.get_attribute("src")
-                    except:
-                        img_url = None
+                if "articleId=" in href:
+                    article_id = href.split("articleId=")[-1].split("&")[0]
+                else:
+                    article_id = href.rstrip("/").split("/")[-1]
 
-                    if not any(a["id"] == article_id for a in articles):
-                        articles.append({
-                            "id": article_id,
-                            "title": title,
-                            "link": href,
-                            "image": img_url
-                        })
+                img_url = None
+                img_elem = elem.find('img')
+                if img_elem and img_elem.get('src'):
+                    img_url = img_elem.get('src')
+                    if not img_url.startswith('http'):
+                        img_url = f"https://aion2.plaync.com{img_url}"
 
-                    if len(articles) >= 5:
-                        break
-            except Exception:
-                continue
+                if not any(a["id"] == article_id for a in articles):
+                    articles.append({
+                        "id": article_id,
+                        "title": title,
+                        "link": href,
+                        "image": img_url
+                    })
+
+                if len(articles) >= 5:
+                    break
 
     except Exception as e:
-        print(f"Selenium 크롤링 중 에러 발생: {e}")
-    finally:
-        if driver:
-            driver.quit()
+        print(f"크롤링 중 에러 발생: {e}")
 
     return articles
 
@@ -142,7 +129,6 @@ async def check_aion2_updates():
     if not channel:
         return
 
-    # 비동기로 크롤링 실행 (Heartbeat 멈춤 차단)
     articles = await asyncio.to_thread(get_latest_articles)
     if not articles:
         return
