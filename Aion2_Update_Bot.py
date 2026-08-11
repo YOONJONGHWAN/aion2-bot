@@ -47,6 +47,7 @@ async def 안녕(ctx):
 
 @bot.command()
 async def 확인(ctx):
+    print("[디버그] '!확인' 명령어 수신됨!")
     await ctx.send("아이온2 게시판에서 최근 글 목록을 확인하는 중입니다...")
 
     articles = await get_latest_articles()
@@ -76,7 +77,6 @@ async def get_latest_articles():
         "Origin": "https://aion2.plaync.com"
     }
 
-    # 5초 내로 응답 없으면 타임아웃 처리
     timeout = aiohttp.ClientTimeout(total=5)
 
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
