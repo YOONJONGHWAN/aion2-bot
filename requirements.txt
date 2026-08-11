@@ -4,3 +4,4 @@ beautifulsoup4
 flask
 aiohttp
 playwright
+playwright-stealth
