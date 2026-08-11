@@ -1,5 +1,6 @@
 import os
 import asyncio
+import subprocess
 from threading import Thread
 from flask import Flask
 from bs4 import BeautifulSoup
@@ -70,17 +71,33 @@ async def get_latest_official_notices_with_browser():
     target_url = "https://aion2.plaync.com/ko-kr/board/notice/list"
 
     async with async_playwright() as p:
-        # Render 서버 환경에서 안정적으로 동작하도록 가벼운 설정 추가 (executable_path 제거 및 환경 변수 활용)
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-accelerated-2d-canvas",
-                "--disable-gpu"
-            ]
-        )
+        try:
+            # 1차 브라우저 실행 시도
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-gpu"
+                ]
+            )
+        except Exception as e:
+            print(f"[디버그] 브라우저 실행 실패, 자동 설치 시도 중... 오류: {e}")
+            # 실행 파일이 없거나 경로가 어긋났을 때 코드가 직접 브라우저 설치를 시도
+            subprocess.run(["playwright", "install", "chromium"], capture_output=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-gpu"
+                ]
+            )
+
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 800}
@@ -89,13 +106,9 @@ async def get_latest_official_notices_with_browser():
 
         try:
             print("[디버그] 브라우저로 공식 홈페이지 접속 중...")
-            # 페이지가 완전히 로드될 때까지 대기
             await page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
-            
-            # 자바스크립트가 공지 목록을 그려낼 때까지 잠시 대기
             await page.wait_for_timeout(3000)
 
-            # 렌더링된 HTML 가져오기
             html_text = await page.content()
             soup = BeautifulSoup(html_text, "html.parser")
 
