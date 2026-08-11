@@ -5,6 +5,7 @@ from threading import Thread
 import discord
 from discord.ext import tasks, commands
 import requests
+from bs4 import BeautifulSoup
 
 # Flask 웹 서버 (Render 핑 유지용)
 app = Flask('')
@@ -25,11 +26,10 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# PlayNC 아이온2 공지사항 API를 직접 호출하여 데이터를 가져오는 함수
+# PlayNC 아이온2 공지사항 목록을 가져오는 함수
 def get_latest_official_notices_via_api():
     notices = []
     try:
-        # PlayNC 공지사항 게시판 목록 API 주소 (일반적으로 사용되는 공식 엔드포인트 패턴)
         api_url = "https://aion2.plaync.com/ko-kr/board/notice/list"
         
         headers = {
@@ -39,15 +39,11 @@ def get_latest_official_notices_via_api():
             "Referer": "https://aion2.plaync.com/ko-kr/board/notice/list"
         }
         
-        # 브라우저 우회가 어려울 경우 requests를 통해 HTML 파싱을 시도하거나 API를 호출합니다.
-        # 만약 API 구조가 다르다면 BeautifulSoup을 활용한 백업 파싱을 시도합니다.
-        from bs4 import BeautifulSoup
         response = requests.get(api_url, headers=headers, timeout=10)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 페이지 내에서 a 태그 중 게시글 링크 패턴을 모두 찾습니다.
             for a in soup.find_all('a', href=True):
                 href = a['href']
                 title = a.get_text(strip=True)
@@ -78,7 +74,6 @@ async def on_ready():
 async def manual_check(ctx):
     await ctx.send("🔍 아이온2 최신 공지사항을 확인하는 중입니다...")
     
-    # 동기 함수이므로 루프를 통해 실행
     notices = await asyncio.to_thread(get_latest_official_notices_via_api)
     
     if not notices:
@@ -91,10 +86,10 @@ async def manual_check(ctx):
         
     await ctx.send(msg)
 
-# 일정 주기마다 자동으로 공지 확인 (예: 30분 마다)
-@tasks.loop(minutes=30)
+# 5분 주기로 자동으로 공지 확인
+@tasks.loop(minutes=5)
 async def check_aion2_updates():
-    print("자동 공지 확인 중...")
+    print("자동 공지 확인 중 (5분 주기)...")
     notices = await asyncio.to_thread(get_latest_official_notices_via_api)
     if notices:
         pass
