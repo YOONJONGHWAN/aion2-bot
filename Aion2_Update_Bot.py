@@ -2,9 +2,9 @@ import os
 import asyncio
 from threading import Thread
 from flask import Flask
+import aiohttp
 import discord
 from discord.ext import commands, tasks
-from playwright.async_api import async_playwright
 
 # --------------------------------------------------
 # 1. Render 웹 서버 유지용 Flask 설정
@@ -36,67 +36,75 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 CHANNEL_ID_ENV = os.getenv('DISCORD_CHANNEL_ID')
 NOTIFICATION_CHANNEL_ID = int(CHANNEL_ID_ENV) if CHANNEL_ID_ENV and CHANNEL_ID_ENV.isdigit() else None
 
-TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cmstory/list"
+# 찾아낸 엔씨소프트 공식 게시판 API 주소
+API_URL = "https://api-community.plaync.com/aion2/board/cm_story_ko/article/search/moreArticle?isVote=true&moreSize=18&moreDirection=BEFORE&previousArticleId=0"
 
-last_seen_link = None  # 중복 감지용 마지막 알림 게시글 링크
+# 일반 웹 브라우저 요청 헤더
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Referer": "https://aion2.plaync.com/",
+    "Accept": "application/json"
+}
+
+last_seen_id = None  # 중복 감지용 마지막 게시글 ID
 
 # --------------------------------------------------
-# 3. Playwright 크롤링 함수 (user_agent 설정)
+# 3. API 직접 호출 함수 (0.1초 초고속 조회)
 # --------------------------------------------------
 async def fetch_latest_posts(limit=5):
-    async with async_playwright() as p:
+    async with aiohttp.ClientSession() as session:
         try:
-            browser = await p.chromium.launch(headless=True, args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu"
-            ])
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 720}
-            )
-            page = await context.new_page()
-            
-            await page.goto(TARGET_URL, timeout=60000, wait_until="domcontentloaded")
-            await page.wait_for_selector('a.title', timeout=15000)
-            
-            title_elements = await page.query_selector_all('a.title')
-            posts = []
-            
-            for elem in title_elements[:limit]:
-                title = await elem.inner_text()
-                link = await elem.get_attribute('href')
+            async with session.get(API_URL, headers=HEADERS, timeout=10) as response:
+                if response.status != 200:
+                    print(f"[ERROR] API 호출 실패 (상태 코드: {response.status})", flush=True)
+                    return []
                 
-                if link and link.startswith('/'):
-                    link = "https://aion2.plaync.com" + link
+                data = await response.json()
+                
+                # API 응답 구조에서 게시글 배열 추출
+                articles = []
+                if isinstance(data, list):
+                    articles = data
+                elif isinstance(data, dict):
+                    articles = data.get("list") or data.get("articles") or data.get("contents") or data.get("documents") or []
+
+                posts = []
+                for item in articles[:limit]:
+                    title = item.get("title") or item.get("subject") or "제목 없음"
+                    article_id = item.get("articleId") or item.get("id")
                     
-                posts.append({"title": title.strip(), "link": link})
-                
-            await browser.close()
-            return posts
+                    # 게시글 상세 링크 생성
+                    link = f"https://aion2.plaync.com/ko-kr/board/cmstory/view?articleId={article_id}" if article_id else "https://aion2.plaync.com/ko-kr/board/cmstory/list"
+                    
+                    posts.append({
+                        "id": str(article_id),
+                        "title": title.strip(),
+                        "link": link
+                    })
+                    
+                return posts
 
         except Exception as e:
-            print(f"[ERROR] 크롤링 실패: {e}")
+            print(f"[ERROR] API 데이터 수신 중 오류 발생: {e}", flush=True)
             return []
 
 # --------------------------------------------------
-# 4. 자동 감지 로직 (다중 새 글 순서대로 전송 & 중복 방지)
+# 4. 자동 감지 로직 (5분 주기, 다중 새 글 순서대로 전송)
 # --------------------------------------------------
 @bot.event
 async def on_ready():
-    print(f"[INFO] 디스코드 봇 로그인 완료: {bot.user.name}")
+    print(f"[INFO] 디스코드 봇 로그인 완료: {bot.user.name}", flush=True)
     if NOTIFICATION_CHANNEL_ID:
-        print(f"[INFO] 알림 대상 채널 ID: {NOTIFICATION_CHANNEL_ID}")
+        print(f"[INFO] 알림 대상 채널 ID: {NOTIFICATION_CHANNEL_ID}", flush=True)
     else:
-        print("[WARN] DISCORD_CHANNEL_ID 환경 변수가 설정되지 않았거나 올바르지 않습니다.")
+        print("[WARN] DISCORD_CHANNEL_ID 환경 변수가 설정되지 않았거나 올바르지 않습니다.", flush=True)
         
     if not auto_check_update.is_running():
         auto_check_update.start()
 
 @tasks.loop(minutes=5)
 async def auto_check_update():
-    global last_seen_link
+    global last_seen_id
     
     if not NOTIFICATION_CHANNEL_ID:
         return
@@ -109,22 +117,22 @@ async def auto_check_update():
     if not posts:
         return
 
-    # 처음 실행 시 최신글 1개를 기준점으로 저장
-    if last_seen_link is None:
-        last_seen_link = posts[0]['link']
-        print(f"[INFO] 최초 기준점 저장: {last_seen_link}")
+    # 최초 실행 시 가장 최신글 ID를 기준점으로 저장
+    if last_seen_id is None:
+        last_seen_id = posts[0]['id']
+        print(f"[INFO] 최초 기준점 저장 (Article ID: {last_seen_id})", flush=True)
         return
 
-    # 이전에 전송했던 글(last_seen_link) 이전까지의 모든 '새 글'만 수집
+    # 이전 기준점 ID 나오기 전까지의 모든 새 글 수집
     new_posts = []
     for post in posts:
-        if post['link'] == last_seen_link:
+        if post['id'] == last_seen_id:
             break
         new_posts.append(post)
 
-    # 새 글이 있으면 기준점 업데이트 후 오래된 글부터 순서대로 전송
+    # 새 글이 존재하면 기준점 업데이트 후 오래된 글부터 순서대로 알림 발송
     if new_posts:
-        last_seen_link = new_posts[0]['link']
+        last_seen_id = new_posts[0]['id']
         for post in reversed(new_posts):
             await channel.send(f"📢 **[새 게시글] {post['title']}**\n🔗 {post['link']}")
 
