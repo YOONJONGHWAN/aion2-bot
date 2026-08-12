@@ -6,7 +6,9 @@ import discord
 from discord.ext import commands, tasks
 from playwright.async_api import async_playwright
 
+# --------------------------------------------------
 # 1. Render 웹 서버 유지용 Flask 설정
+# --------------------------------------------------
 app = Flask('')
 
 @app.route('/')
@@ -21,21 +23,26 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# 2. 디스코드 봇 및 설정
+# --------------------------------------------------
+# 2. 디스코드 봇 및 환경 변수 설정
+# --------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 TOKEN = os.getenv('DISCORD_TOKEN')
+
+# Render Environment에 등록된 NOTIFICATION_CHANNEL_ID 읽어오기
+CHANNEL_ID_ENV = os.getenv('NOTIFICATION_CHANNEL_ID')
+NOTIFICATION_CHANNEL_ID = int(CHANNEL_ID_ENV) if CHANNEL_ID_ENV and CHANNEL_ID_ENV.isdigit() else None
+
 TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cmstory/list"
 
-# ★ 본인 디스코드 채널 ID 입력
-NOTIFICATION_CHANNEL_ID = 123456789012345678  
+last_seen_link = None  # 중복 감지용 마지막 알림 게시글 링크
 
-# 가장 최근에 알림을 보낸 게시글 링크 저장 변수
-last_seen_link = None  
-
-# 3. 기존 동작하던 크롤링 함수 (상위 5개 수집으로 확대)
+# --------------------------------------------------
+# 3. Playwright 크롤링 함수 (user_agent 복원)
+# --------------------------------------------------
 async def fetch_latest_posts(limit=5):
     async with async_playwright() as p:
         try:
@@ -45,7 +52,11 @@ async def fetch_latest_posts(limit=5):
                 "--disable-dev-shm-usage",
                 "--disable-gpu"
             ])
-            page = await browser.new_page()
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720}
+            )
+            page = await context.new_page()
             
             await page.goto(TARGET_URL, timeout=60000, wait_until="domcontentloaded")
             await page.wait_for_selector('a.title', timeout=15000)
@@ -66,13 +77,20 @@ async def fetch_latest_posts(limit=5):
             return posts
 
         except Exception as e:
-            print(f"[ERROR] 크롤링 중 예외 발생: {e}")
+            print(f"[ERROR] 크롤링 실패: {e}")
             return []
 
-# 4. 자동 감지 로직 (하루에 여러 개 올라올 때 누락 방지 처리)
+# --------------------------------------------------
+# 4. 자동 감지 로직 (다중 새 글 순서대로 전송 & 중복 방지)
+# --------------------------------------------------
 @bot.event
 async def on_ready():
-    print(f"[INFO] 로그인 완료: {bot.user.name}")
+    print(f"[INFO] 디스코드 봇 로그인 완료: {bot.user.name}")
+    if NOTIFICATION_CHANNEL_ID:
+        print(f"[INFO] 알림 대상 채널 ID: {NOTIFICATION_CHANNEL_ID}")
+    else:
+        print("[WARN] NOTIFICATION_CHANNEL_ID 환경 변수가 설정되지 않았거나 올바르지 않습니다.")
+        
     if not auto_check_update.is_running():
         auto_check_update.start()
 
@@ -80,38 +98,39 @@ async def on_ready():
 async def auto_check_update():
     global last_seen_link
     
+    if not NOTIFICATION_CHANNEL_ID:
+        return
+
     channel = bot.get_channel(NOTIFICATION_CHANNEL_ID)
     if not channel:
         return
 
-    # 하루에 2~3개 이상 올라오는 상황을 고려해 상위 5개를 가져옴
     posts = await fetch_latest_posts(limit=5)
     if not posts:
         return
 
-    # 봇이 처음 켜졌을 때는 현재 최신글 1개만 기준점으로 등록
+    # 처음 실행 시 최신글 1개를 기준점으로 저장
     if last_seen_link is None:
         last_seen_link = posts[0]['link']
         print(f"[INFO] 최초 기준점 저장: {last_seen_link}")
         return
 
-    # 가져온 상위 5개 글 중, 기존에 보았던 글(last_seen_link)이 나오기 직전까지를 전부 '새 글'로 수집
+    # 이전에 전송했던 글(last_seen_link) 이전까지의 모든 '새 글'만 수집
     new_posts = []
     for post in posts:
         if post['link'] == last_seen_link:
             break
         new_posts.append(post)
 
-    # 새 글이 존재할 경우
+    # 새 글이 있으면 기준점 업데이트 후 오래된 글부터 순서대로 전송
     if new_posts:
-        # 가장 최근 글 링크로 기준점 업데이트
         last_seen_link = new_posts[0]['link']
-        
-        # 여러 개가 한 번에 올라왔다면 작성된 순서(오래된 글 -> 최신 글)대로 각각 알림 전송
         for post in reversed(new_posts):
             await channel.send(f"📢 **[새 게시글] {post['title']}**\n🔗 {post['link']}")
 
-# 5. 수동 확인 명령어
+# --------------------------------------------------
+# 5. 수동 명령어 (!확인)
+# --------------------------------------------------
 @bot.command(name='확인')
 async def check_update(ctx):
     await ctx.send("CM 스토리 최신 게시글을 확인하는 중입니다...")
@@ -125,7 +144,9 @@ async def check_update(ctx):
     else:
         await ctx.send("게시글을 불러오지 못했습니다.")
 
+# --------------------------------------------------
 # 6. 실행
+# --------------------------------------------------
 if __name__ == "__main__":
     keep_alive()
     bot.run(TOKEN)
