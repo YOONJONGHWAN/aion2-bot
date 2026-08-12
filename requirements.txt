@@ -1,4 +1,4 @@
 discord.py
 playwright
 flask
-google-generativeai
+google-genai
