@@ -7,7 +7,7 @@ import threading
 import discord
 from discord.ext import commands, tasks
 from flask import Flask
-import google.generativeai as genai
+from google import genai
 
 # --------------------------------------------------
 # 1. 환경 변수 및 구글 AI SDK 설정
@@ -15,8 +15,8 @@ import google.generativeai as genai
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# 최신 구글 GenAI 클라이언트 생성
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # --------------------------------------------------
 # 2. Render 24시간 작동용 Flask 웹 서버 설정
@@ -42,7 +42,7 @@ def clean_html(raw_html):
     return cleantext.strip()
 
 async def summarize_with_gemini(title, content):
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEY or not client:
         print("[WARN] GEMINI_API_KEY 환경변수가 설정되어 있지 않습니다.", flush=True)
         return None
 
@@ -60,22 +60,25 @@ async def summarize_with_gemini(title, content):
         f"[내용]: {text_to_summarize[:1500]}"
     )
 
-    try:
-        # 구글 공식 SDK를 통해 호출 (REST URL 404 방지)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None, 
-            lambda: model.generate_content(prompt)
-        )
-        
-        elapsed = time.time() - start_time
-        if response and response.text:
-            print(f"[INFO] AI 요약 성공 (소요시간: {elapsed:.2f}초)", flush=True)
-            return response.text.strip()
-    except Exception as e:
-        print(f"[WARN] Gemini API 호출 예외 발생: {e}", flush=True)
+    # CMD 테스트로 작동 확인된 3.x 계열 모델 목록
+    candidate_models = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']
+    loop = asyncio.get_running_loop()
+
+    for model_name in candidate_models:
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda m=model_name: client.models.generate_content(
+                    model=m,
+                    contents=prompt
+                )
+            )
+            if response and response.text:
+                elapsed = time.time() - start_time
+                print(f"[INFO] AI 요약 성공 (사용 모델: {model_name}, 소요시간: {elapsed:.2f}초)", flush=True)
+                return response.text.strip()
+        except Exception as e:
+            print(f"[WARN] {model_name} 모델 호출 실패, 다음 모델 시도 중... (사유: {e})", flush=True)
 
     return None
 
@@ -110,7 +113,7 @@ async def check_command(ctx):
     else:
         embed = discord.Embed(title=f"📢 {test_title}", color=0xffa500)
         embed.add_field(name="📝 공지 내용", value=test_content, inline=False)
-        embed.set_footer(text="⚠️ AI 요약 실패 (Google AI Studio API 키 및 설정 확인 필요)")
+        embed.set_footer(text="⚠️ AI 요약 생성 실패 (Render 로그를 확인해 주세요)")
         
     await ctx.send(embed=embed)
 
