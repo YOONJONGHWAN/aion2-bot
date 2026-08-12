@@ -32,7 +32,7 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --------------------------------------------------
-# 3. 유틸리티 함수 (HTML 태그 제거 및 AI 요약)
+# 3. 유틸리티 함수 (HTML 태그 제거 및 상세 AI 요약)
 # --------------------------------------------------
 def clean_html(raw_html):
     if not raw_html:
@@ -51,16 +51,17 @@ async def summarize_with_gemini(title, content):
     if len(text_to_summarize) < 30:
         text_to_summarize = f"제목: {title}"
 
+    # 3줄 제한을 없애고 중요 내용(점검시간, 패치내역, 이벤트 등)을 더 상세히 담도록 프롬프트 수정
     prompt = (
-        "너는 아이온2 디스코드 알림 봇이야. 아래 게임 공지사항/게시글을 읽고 유저들이 읽기 쉽게 핵심만 3줄로 요약해줘.\n"
+        "너는 아이온2 디스코드 알림 봇이야. 아래 게임 공지사항/게시글을 읽고 유저들이 꼭 알아야 할 중요한 내용을 알차게 정리해줘.\n"
         "조건:\n"
-        "1. 각 줄은 '- '로 시작할 것\n"
-        "2. 군더더기 없이 핵심 변경사항/이벤트 내용만 명확히 요약할 것\n\n"
+        "1. 줄 수에 구애받지 말고, 주요 점검 시간, 핵심 변경사항, 신규 이벤트, 보상, 주의사항 등 중요한 정보가 빠짐없이 포함되도록 작성할 것\n"
+        "2. 유저들이 읽기 쉽게 각 항목은 '- '로 시작하여 가독성 높게 정리할 것\n"
+        "3. 군더더기 서론이나 인사말 없이 핵심 요약 내용만 출력할 것\n\n"
         f"[제목]: {title}\n"
-        f"[내용]: {text_to_summarize[:1500]}"
+        f"[내용]: {text_to_summarize[:2500]}"
     )
 
-    # CMD 테스트로 검증된 모델 우선 적용
     candidate_models = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']
     loop = asyncio.get_running_loop()
 
@@ -103,11 +104,14 @@ async def check_command(ctx):
     await ctx.send("공지사항을 확인하고 요약을 생성하는 중입니다...")
     
     test_title = "아이온2 정기 점검 및 업데이트 안내"
-    test_content = "신규 던전 추가 및 클래스 밸런스 패치가 진행됩니다. 서버 점검 시간은 오전 6시부터 10시까지입니다."
-    
-    # 지정하신 CM 스토리 게시판 주소 적용
+    test_content = (
+        "신규 던전 '파멸의 신전'이 추가되며 클래스 밸런스 패치가 진행됩니다. "
+        "서버 점검 시간은 오전 6시부터 10시까지 총 4시간 동안 진행되며, "
+        "점검 보상으로 신성한 수호석 10개와 경험치 부스터가 지급됩니다. "
+        "점검 전 캐릭터를 안전한 장소로 이동시켜 주시기 바랍니다."
+    )
     test_url = "https://aion2.plaync.com/ko-kr/board/cm_story/list" 
-    test_image_url = "https://cdn.discordapp.com/embed/avatars/0.png"
+    test_image_url = None
 
     summary = await summarize_with_gemini(test_title, test_content)
     
@@ -118,7 +122,7 @@ async def check_command(ctx):
     )
     
     if summary:
-        embed.add_field(name="🤖 AI 3줄 요약", value=summary, inline=False)
+        embed.add_field(name="🤖 AI 주요 내용 요약", value=summary, inline=False)
     else:
         embed.add_field(name="📝 공지 내용", value=test_content, inline=False)
         embed.set_footer(text="⚠️ AI 요약 생성 실패 (Render 로그를 확인해 주세요)")
