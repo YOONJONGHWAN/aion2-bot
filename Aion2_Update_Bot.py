@@ -32,8 +32,8 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 
-# Render Environment에 등록된 NOTIFICATION_CHANNEL_ID 읽어오기
-CHANNEL_ID_ENV = os.getenv('NOTIFICATION_CHANNEL_ID')
+# Render Environment의 DISCORD_CHANNEL_ID 읽어오기
+CHANNEL_ID_ENV = os.getenv('DISCORD_CHANNEL_ID')
 NOTIFICATION_CHANNEL_ID = int(CHANNEL_ID_ENV) if CHANNEL_ID_ENV and CHANNEL_ID_ENV.isdigit() else None
 
 TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cmstory/list"
@@ -41,7 +41,7 @@ TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cmstory/list"
 last_seen_link = None  # 중복 감지용 마지막 알림 게시글 링크
 
 # --------------------------------------------------
-# 3. Playwright 크롤링 함수 (user_agent 복원)
+# 3. Playwright 크롤링 함수 (user_agent 설정)
 # --------------------------------------------------
 async def fetch_latest_posts(limit=5):
     async with async_playwright() as p:
@@ -89,7 +89,7 @@ async def on_ready():
     if NOTIFICATION_CHANNEL_ID:
         print(f"[INFO] 알림 대상 채널 ID: {NOTIFICATION_CHANNEL_ID}")
     else:
-        print("[WARN] NOTIFICATION_CHANNEL_ID 환경 변수가 설정되지 않았거나 올바르지 않습니다.")
+        print("[WARN] DISCORD_CHANNEL_ID 환경 변수가 설정되지 않았거나 올바르지 않습니다.")
         
     if not auto_check_update.is_running():
         auto_check_update.start()
