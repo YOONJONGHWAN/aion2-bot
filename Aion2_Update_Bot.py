@@ -33,13 +33,13 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 TOKEN = os.getenv('DISCORD_TOKEN')
 TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cmstory/list"
 
-# ★ 본인의 디스코드 채널 ID(숫자)로 반드시 변경해주세요! (채널 우클릭 -> 채널 ID 복사)
-NOTIFICATION_CHANNEL_ID = 1536734023982911639  
+# ★ 본인의 디스코드 채널 ID(숫자)로 변경
+NOTIFICATION_CHANNEL_ID = 123456789012345678  
 
 last_post_link = None  # 중복 감지용 변수
 
 # --------------------------------------------------
-# 3. Playwright 크롤링 함수 (먹통 원인 제거 버전)
+# 3. 기존 동작하던 Playwright 크롤링 함수 (구조 원복)
 # --------------------------------------------------
 async def fetch_latest_posts(limit=3):
     async with async_playwright() as p:
@@ -51,24 +51,19 @@ async def fetch_latest_posts(limit=3):
         ]
         
         try:
-            # Render 빌드 단계에서 미리 다운로드되므로 바로 실행
             browser = await p.chromium.launch(headless=True, args=browser_args)
-        except Exception as e:
-            print(f"[ERROR] 브라우저 실행 실패: {e}")
-            return []
-        
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720}
-        )
-        page = await context.new_page()
-        posts = []
-        
-        try:
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 720}
+            )
+            page = await context.new_page()
+            
             await page.goto(TARGET_URL, timeout=60000, wait_until="domcontentloaded")
             await page.wait_for_selector('a.title', timeout=15000)
             
             title_elements = await page.query_selector_all('a.title')
+            posts = []
+            
             for elem in title_elements[:limit]:
                 title = await elem.inner_text()
                 link = await elem.get_attribute('href')
@@ -78,16 +73,15 @@ async def fetch_latest_posts(limit=3):
                     
                 posts.append({"title": title.strip(), "link": link})
                 
+            await browser.close()
             return posts
 
         except Exception as e:
             print(f"[ERROR] 크롤링 실패: {e}")
             return []
-        finally:
-            await browser.close()
 
 # --------------------------------------------------
-# 4. 봇 준비 이벤트 및 5분 주기 자동 알림 루프
+# 4. 봇 준비 이벤트 및 5분 주기 자동 알림 (중복 제거 적용)
 # --------------------------------------------------
 @bot.event
 async def on_ready():
@@ -101,27 +95,26 @@ async def auto_check_update():
     
     channel = bot.get_channel(NOTIFICATION_CHANNEL_ID)
     if not channel:
-        print("[WARN] 알림 채널을 찾을 수 없습니다. NOTIFICATION_CHANNEL_ID를 확인하세요.")
         return
 
     posts = await fetch_latest_posts(limit=3)
     if not posts:
         return
 
-    # 봇 시작 시 최초 1회 기준점 설정
+    # 최초 실행 시 가장 최근 글을 기준점으로 등록만 함
     if last_post_link is None:
         last_post_link = posts[0]['link']
-        print(f"[INFO] 최초 기준점 설정 완료: {last_post_link}")
+        print(f"[INFO] 최초 기준점 설정: {last_post_link}")
         return
 
-    # 새 글만 선별
+    # 기존 최신글 이전까지의 '새 게시글'만 수집
     new_posts = []
     for post in posts:
         if post['link'] == last_post_link:
             break
         new_posts.append(post)
 
-    # 새 글이 존재할 때만 메시지 전송 (없으면 침묵)
+    # 새 글이 있을 때만 알림 전송 후 기준점 업데이트
     if new_posts:
         last_post_link = new_posts[0]['link']
         msg = f"🎉 **새로운 게시글이 등록되었습니다! ({len(new_posts)}개)**\n\n"
@@ -146,7 +139,7 @@ async def check_update(ctx):
         await ctx.send("게시글을 불러오지 못했습니다.")
 
 # --------------------------------------------------
-# 6. 실행 구문
+# 6. 실행
 # --------------------------------------------------
 if __name__ == "__main__":
     keep_alive()
