@@ -50,22 +50,19 @@ HEADERS = {
 last_seen_id = None
 
 # --------------------------------------------------
-# 3. JSON 탐색 및 파싱 헬퍼 함수
+# 3. JSON 및 이미지 추출 헬퍼 함수
 # --------------------------------------------------
 def find_articles_list(obj):
-    """JSON 객체 구조 내부를 자동 탐색하여 게시글 배열(List)을 추출"""
     if isinstance(obj, list):
         if len(obj) > 0 and isinstance(obj[0], dict):
             return obj
         return []
     if isinstance(obj, dict):
-        # 알려진 주요 키 우선 탐색
         for key in ["list", "articles", "contents", "documents", "data", "result"]:
             if key in obj:
                 res = find_articles_list(obj[key])
                 if res:
                     return res
-        # 전체 딕셔너리 순회 탐색
         for k, v in obj.items():
             res = find_articles_list(v)
             if res:
@@ -73,7 +70,6 @@ def find_articles_list(obj):
     return []
 
 def extract_post_info(item):
-    """게시글 아이템에서 Title 및 ID 추출 (중첩 객체 지원)"""
     if not isinstance(item, dict):
         return None
     
@@ -93,10 +89,32 @@ def extract_post_info(item):
         or item.get("title") or item.get("subject") or item.get("name")
     )
 
+    # 썸네일/대표 이미지 URL 추출 탐색
+    image_url = (
+        target.get("thumbnailUrl") or target.get("thumbnail") or 
+        target.get("imageUrl") or target.get("image") or 
+        target.get("coverImageUrl") or target.get("posterUrl") or
+        item.get("thumbnailUrl") or item.get("thumbnail") or
+        item.get("imageUrl") or item.get("image")
+    )
+
+    # 이미지가 배열 구조로 들어있는 경우
+    if not image_url and isinstance(target.get("images"), list) and len(target["images"]) > 0:
+        first_img = target["images"][0]
+        if isinstance(first_img, str):
+            image_url = first_img
+        elif isinstance(first_img, dict):
+            image_url = first_img.get("url") or first_img.get("src")
+
+    # 상대 경로인 경우 절대 경로로 변환
+    if image_url and isinstance(image_url, str) and image_url.startswith("/"):
+        image_url = f"https://api-community.plaync.com{image_url}"
+
     if article_id or title:
         return {
             "id": str(article_id) if article_id else "0",
-            "title": str(title).strip() if title else "제목 없음"
+            "title": str(title).strip() if title else "제목 없음",
+            "image": image_url
         }
     return None
 
@@ -107,19 +125,11 @@ async def fetch_latest_posts(limit=5):
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(API_URL, headers=HEADERS, timeout=10) as response:
-                print(f"[DEBUG] API 응답 상태 코드: {response.status}", flush=True)
-                
                 if response.status != 200:
-                    print(f"[ERROR] API 요청 실패 (상태 코드: {response.status})", flush=True)
                     return []
                 
                 data = await response.json()
-                
                 articles_raw = find_articles_list(data)
-                
-                if not articles_raw:
-                    # 데이터 구조 파악용 원본 출력
-                    print(f"[DEBUG] JSON 구조 분석용 데이터 샘플: {str(data)[:300]}", flush=True)
 
                 posts = []
                 for item in articles_raw[:limit]:
@@ -130,28 +140,22 @@ async def fetch_latest_posts(limit=5):
                         posts.append({
                             "id": article_id,
                             "title": info["title"],
-                            "link": link
+                            "link": link,
+                            "image": info["image"]
                         })
-                    
-                print(f"[DEBUG] 최종 추출된 게시글 수: {len(posts)}개", flush=True)
                 return posts
 
         except Exception as e:
-            print(f"[ERROR] API 데이터 수신/파싱 오류 발생:", flush=True)
+            print(f"[ERROR] API 데이터 수신/파싱 오류:", flush=True)
             traceback.print_exc()
             return []
 
 # --------------------------------------------------
-# 5. 이벤트 및 자동 감지 로직
+# 5. 이벤트 및 자동 감지 로직 (Embed 형태 알림)
 # --------------------------------------------------
 @bot.event
 async def on_ready():
     print(f"[INFO] 디스코드 봇 로그인 성공: {bot.user.name}", flush=True)
-    if NOTIFICATION_CHANNEL_ID:
-        print(f"[INFO] 알림 대상 채널 ID: {NOTIFICATION_CHANNEL_ID}", flush=True)
-    else:
-        print("[WARN] DISCORD_CHANNEL_ID 환경 변수가 비어있거나 올바르지 않습니다.", flush=True)
-        
     if not auto_check_update.is_running():
         auto_check_update.start()
 
@@ -184,7 +188,19 @@ async def auto_check_update():
     if new_posts:
         last_seen_id = new_posts[0]['id']
         for post in reversed(new_posts):
-            await channel.send(f"📢 **[새 게시글] {post['title']}**\n🔗 {post['link']}")
+            # 카드 형태의 Embed 생성
+            embed = discord.Embed(
+                title=f"📢 [새 게시글] {post['title']}",
+                url=post['link'],
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="링크", value=f"[게시글 바로가기]({post['link']})", inline=False)
+            
+            # 이미지가 존재하는 경우 카드에 삽입
+            if post['image']:
+                embed.set_image(url=post['image'])
+                
+            await channel.send(embed=embed)
 
 # --------------------------------------------------
 # 6. 수동 명령어 (!확인)
@@ -195,10 +211,19 @@ async def check_update(ctx):
     posts = await fetch_latest_posts(limit=3)
     
     if posts:
-        msg = "📢 **현재 게시판 최신글 목록:**\n\n"
-        for idx, post in enumerate(posts, 1):
-            msg += f"**{idx}. {post['title']}**\n🔗 {post['link']}\n\n"
-        await ctx.send(msg)
+        for post in posts:
+            embed = discord.Embed(
+                title=post['title'],
+                url=post['link'],
+                color=discord.Color.gold()
+            )
+            embed.add_field(name="링크", value=f"[게시글 바로가기]({post['link']})", inline=False)
+            
+            # 이미지가 있으면 카드 아래쪽에 크게 표시
+            if post['image']:
+                embed.set_image(url=post['image'])
+                
+            await ctx.send(embed=embed)
     else:
         await ctx.send("게시글을 불러오지 못했습니다.")
 
@@ -207,7 +232,5 @@ async def check_update(ctx):
 # --------------------------------------------------
 if __name__ == "__main__":
     keep_alive()
-    if not TOKEN:
-        print("[CRITICAL] DISCORD_TOKEN 환경 변수가 설정되지 않았습니다!", flush=True)
-    else:
+    if TOKEN:
         bot.run(TOKEN)
