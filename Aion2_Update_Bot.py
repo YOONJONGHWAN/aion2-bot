@@ -1,6 +1,5 @@
 import os
 import asyncio
-import subprocess
 from threading import Thread
 from flask import Flask
 import discord
@@ -32,15 +31,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 TOKEN = os.getenv('DISCORD_TOKEN')
-TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cmstory/list"  # 아이온2 CM 스토리 URL
+TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cmstory/list"
 
-# ★ 본인의 디스코드 채널 ID(숫자)로 변경해주세요 (채널 우클릭 -> 채널 ID 복사)
+# ★ 본인의 디스코드 채널 ID(숫자)로 반드시 변경해주세요! (채널 우클릭 -> 채널 ID 복사)
 NOTIFICATION_CHANNEL_ID = 123456789012345678  
 
-last_post_link = None  # 중복 감지용 마지막 글 링크 저장 변수
+last_post_link = None  # 중복 감지용 변수
 
 # --------------------------------------------------
-# 3. Playwright 크롤링 함수 (최신글 N개 가져오기)
+# 3. Playwright 크롤링 함수 (먹통 원인 제거 버전)
 # --------------------------------------------------
 async def fetch_latest_posts(limit=3):
     async with async_playwright() as p:
@@ -52,13 +51,11 @@ async def fetch_latest_posts(limit=3):
         ]
         
         try:
+            # Render 빌드 단계에서 미리 다운로드되므로 바로 실행
             browser = await p.chromium.launch(headless=True, args=browser_args)
-        except Exception as launch_err:
-            if "Executable doesn't exist" in str(launch_err):
-                subprocess.run(["playwright", "install", "chromium"])
-                browser = await p.chromium.launch(headless=True, args=browser_args)
-            else:
-                raise launch_err
+        except Exception as e:
+            print(f"[ERROR] 브라우저 실행 실패: {e}")
+            return []
         
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0 Safari/537.36",
@@ -124,7 +121,7 @@ async def auto_check_update():
             break
         new_posts.append(post)
 
-    # 새 글이 존재할 때만 알림 전송 (없으면 무시)
+    # 새 글이 존재할 때만 메시지 전송 (없으면 침묵)
     if new_posts:
         last_post_link = new_posts[0]['link']
         msg = f"🎉 **새로운 게시글이 등록되었습니다! ({len(new_posts)}개)**\n\n"
