@@ -4,16 +4,19 @@ import sys
 import time
 import asyncio
 import threading
-import aiohttp
 import discord
 from discord.ext import commands, tasks
 from flask import Flask
+import google.generativeai as genai
 
 # --------------------------------------------------
-# 1. 환경 변수 및 설정 (공백 및 따옴표 자동 정돈)
+# 1. 환경 변수 및 구글 AI SDK 설정
 # --------------------------------------------------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # --------------------------------------------------
 # 2. Render 24시간 작동용 Flask 웹 서버 설정
@@ -57,34 +60,22 @@ async def summarize_with_gemini(title, content):
         f"[내용]: {text_to_summarize[:1500]}"
     )
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
-
-    req_headers = {
-        "Content-Type": "application/json"
-    }
-
-    # API 404 방지를 위해 사용 가능한 Gemini 모델 후보군 순차 시도
-    candidate_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro"]
-
-    async with aiohttp.ClientSession() as session:
-        for model_name in candidate_models:
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-            try:
-                timeout = aiohttp.ClientTimeout(total=8)
-                async with session.post(gemini_url, headers=req_headers, json=payload, timeout=timeout) as response:
-                    elapsed = time.time() - start_time
-                    if response.status == 200:
-                        res_json = await response.json()
-                        summary_text = res_json['candidates'][0]['content']['parts'][0]['text']
-                        print(f"[INFO] AI 요약 성공 (모델: {model_name}, 소요시간: {elapsed:.2f}초)", flush=True)
-                        return summary_text.strip()
-                    else:
-                        err_text = await response.text()
-                        print(f"[WARN] Gemini API 실패 ({model_name}, 코드: {response.status}) - 상세: {err_text}", flush=True)
-            except Exception as e:
-                print(f"[WARN] Gemini API 호출 예외 ({model_name}): {e}", flush=True)
+    try:
+        # 구글 공식 SDK를 통해 호출 (REST URL 404 방지)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None, 
+            lambda: model.generate_content(prompt)
+        )
+        
+        elapsed = time.time() - start_time
+        if response and response.text:
+            print(f"[INFO] AI 요약 성공 (소요시간: {elapsed:.2f}초)", flush=True)
+            return response.text.strip()
+    except Exception as e:
+        print(f"[WARN] Gemini API 호출 예외 발생: {e}", flush=True)
 
     return None
 
@@ -113,14 +104,13 @@ async def check_command(ctx):
     
     summary = await summarize_with_gemini(test_title, test_content)
     
-    # 요약 실패 여부와 상관없이 항상 깔끔한 임베드 형태로 공지 출력
     if summary:
         embed = discord.Embed(title=f"📢 {test_title}", color=0x00ff00)
         embed.add_field(name="🤖 AI 3줄 요약", value=summary, inline=False)
     else:
         embed = discord.Embed(title=f"📢 {test_title}", color=0xffa500)
         embed.add_field(name="📝 공지 내용", value=test_content, inline=False)
-        embed.set_footer(text="⚠️ AI 요약 실패 (Google AI Studio에서 API 키 상태를 확인하세요)")
+        embed.set_footer(text="⚠️ AI 요약 실패 (Google AI Studio API 키 및 설정 확인 필요)")
         
     await ctx.send(embed=embed)
 
