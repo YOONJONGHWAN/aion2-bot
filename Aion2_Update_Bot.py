@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import asyncio
 import traceback
 from threading import Thread
@@ -51,7 +52,6 @@ HEADERS = {
 
 last_seen_id = None
 
-# HTML 태그 제거용 헬퍼 함수
 def clean_html(text):
     if not text:
         return ""
@@ -59,18 +59,17 @@ def clean_html(text):
     return clean.strip()
 
 # --------------------------------------------------
-# 3. Gemini AI 3줄 요약 함수 (상세 에러 출력 적용)
+# 3. Gemini AI 3줄 요약 함수 (타임아웃 5초 단축 & 소요시간 로그)
 # --------------------------------------------------
 async def summarize_with_gemini(title, content):
     if not GEMINI_API_KEY:
-        print("[WARN] GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.", flush=True)
         return None
 
+    start_time = time.time()
     text_to_summarize = clean_html(content)
     if len(text_to_summarize) < 30:
         text_to_summarize = f"제목: {title}"
 
-    # 안정적인 gemini-1.5-flash 모델 사용
     gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     prompt = (
@@ -88,17 +87,24 @@ async def summarize_with_gemini(title, content):
 
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.post(gemini_url, json=payload, timeout=10) as response:
+            # 타임아웃 5초 설정 (지연 방지)
+            timeout = aiohttp.ClientTimeout(total=5)
+            async with session.post(gemini_url, json=payload, timeout=timeout) as response:
+                elapsed = time.time() - start_time
                 if response.status == 200:
                     res_json = await response.json()
                     summary_text = res_json['candidates'][0]['content']['parts'][0]['text']
+                    print(f"[INFO] AI 요약 완료 (소요시간: {elapsed:.2f}초)", flush=True)
                     return summary_text.strip()
                 else:
                     err_text = await response.text()
-                    print(f"[WARN] Gemini API 호출 실패 (코드: {response.status}, 내용: {err_text})", flush=True)
+                    print(f"[WARN] Gemini API 실패 (코드: {response.status}, 소요시간: {elapsed:.2f}초)", flush=True)
                     return None
+        except asyncio.TimeoutError:
+            print(f"[WARN] Gemini API 5초 타임아웃 발생 (요약 생략)", flush=True)
+            return None
         except Exception as e:
-            print(f"[WARN] AI 요약 생성 중 예외 발생: {e}", flush=True)
+            print(f"[WARN] AI 요약 예외 발생: {e}", flush=True)
             return None
 
 # --------------------------------------------------
@@ -179,7 +185,7 @@ def extract_post_info(item):
 async def fetch_latest_posts(limit=5):
     async with aiohttp.ClientSession() as session:
         try:
-            async with session.get(API_URL, headers=HEADERS, timeout=10) as response:
+            async with session.get(API_URL, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=5)) as response:
                 if response.status != 200:
                     return []
                 
@@ -202,8 +208,7 @@ async def fetch_latest_posts(limit=5):
                 return posts
 
         except Exception as e:
-            print(f"[ERROR] API 데이터 수신 오류:", flush=True)
-            traceback.print_exc()
+            print(f"[ERROR] API 데이터 수신 오류: {e}", flush=True)
             return []
 
 # --------------------------------------------------
@@ -243,26 +248,27 @@ async def auto_check_update():
 
     if new_posts:
         last_seen_id = new_posts[0]['id']
-        for post in reversed(new_posts):
+        
+        # 신규 글들 요약 병렬 처리
+        tasks_list = [summarize_with_gemini(p['title'], p['content']) for p in reversed(new_posts)]
+        summaries = await asyncio.gather(*tasks_list)
+
+        for post, summary in zip(reversed(new_posts), summaries):
             embed = discord.Embed(
                 title=f"📢 {post['title']}",
                 url=post['link'],
                 color=discord.Color.blue()
             )
-            
-            summary = await summarize_with_gemini(post['title'], post['content'])
             if summary:
                 embed.add_field(name="📝 **AI 3줄 요약**", value=summary, inline=False)
-
             embed.add_field(name="🔗 바로가기", value=f"[게시글 읽기]({post['link']})", inline=False)
-            
             if post['image']:
                 embed.set_image(url=post['image'])
                 
             await channel.send(embed=embed)
 
 # --------------------------------------------------
-# 7. 수동 명령어 (!확인)
+# 7. 수동 명령어 (!확인 - 병렬 처리 적용)
 # --------------------------------------------------
 @bot.command(name='확인')
 async def check_update(ctx):
@@ -270,19 +276,19 @@ async def check_update(ctx):
     posts = await fetch_latest_posts(limit=2)
     
     if posts:
-        for post in posts:
+        # 2개 글에 대한 AI 요약을 동시에(병렬로) 진행하여 속도 향상
+        summary_tasks = [summarize_with_gemini(post['title'], post['content']) for post in posts]
+        summaries = await asyncio.gather(*summary_tasks)
+
+        for post, summary in zip(posts, summaries):
             embed = discord.Embed(
                 title=post['title'],
                 url=post['link'],
                 color=discord.Color.gold()
             )
-            
-            summary = await summarize_with_gemini(post['title'], post['content'])
             if summary:
                 embed.add_field(name="📝 **AI 3줄 요약**", value=summary, inline=False)
-
             embed.add_field(name="🔗 바로가기", value=f"[게시글 읽기]({post['link']})", inline=False)
-            
             if post['image']:
                 embed.set_image(url=post['image'])
                 
