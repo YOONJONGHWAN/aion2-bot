@@ -34,7 +34,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cmstory/list"
 
 # ★ 본인의 디스코드 채널 ID(숫자)로 반드시 변경해주세요! (채널 우클릭 -> 채널 ID 복사)
-NOTIFICATION_CHANNEL_ID = 123456789012345678  
+NOTIFICATION_CHANNEL_ID = 1536734023982911639  
 
 last_post_link = None  # 중복 감지용 변수
 
