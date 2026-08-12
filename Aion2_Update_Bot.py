@@ -8,7 +8,7 @@ import discord
 from discord.ext import commands, tasks
 
 # --------------------------------------------------
-# 1. Render 웹 서버 유지용 Flask 설정 (포트 자동 감지)
+# 1. Render 웹 서버 유지용 Flask 설정
 # --------------------------------------------------
 app = Flask('')
 
@@ -17,7 +17,6 @@ def home():
     return "AION2 Bot is running!"
 
 def run_flask():
-    # Render가 부여하는 동적 PORT 환경변수를 읽고, 없으면 8080 기본값 사용
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -40,50 +39,72 @@ NOTIFICATION_CHANNEL_ID = int(CHANNEL_ID_ENV) if CHANNEL_ID_ENV and CHANNEL_ID_E
 
 API_URL = "https://api-community.plaync.com/aion2/board/cm_story_ko/article/search/moreArticle?isVote=true&moreSize=18&moreDirection=BEFORE&previousArticleId=0"
 
+# 일반 브라우저 완전 위장용 헤더 보강
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Referer": "https://aion2.plaync.com/",
-    "Accept": "application/json"
+    "Origin": "https://aion2.plaync.com",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
 last_seen_id = None
 
 # --------------------------------------------------
-# 3. API 직접 호출 함수
+# 3. API 직접 호출 함수 (다중 JSON 구조 보완 및 로그 강화)
 # --------------------------------------------------
 async def fetch_latest_posts(limit=5):
     async with aiohttp.ClientSession() as session:
         try:
             async with session.get(API_URL, headers=HEADERS, timeout=10) as response:
+                print(f"[DEBUG] API 응답 상태 코드: {response.status}", flush=True)
+                
                 if response.status != 200:
-                    print(f"[ERROR] API 응답 에러 (상태 코드: {response.status})", flush=True)
+                    print(f"[ERROR] API 요청 차단됨 (상태 코드: {response.status})", flush=True)
                     return []
                 
                 data = await response.json()
                 
+                # 다양한 계층의 JSON 배열 구조 유연하게 탐색
                 articles = []
                 if isinstance(data, list):
                     articles = data
                 elif isinstance(data, dict):
-                    articles = data.get("list") or data.get("articles") or data.get("contents") or data.get("documents") or []
+                    for key in ["list", "articles", "contents", "documents", "data", "result"]:
+                        val = data.get(key)
+                        if isinstance(val, list):
+                            articles = val
+                            break
+                        elif isinstance(val, dict):
+                            for sub_key in ["list", "articles", "contents", "documents"]:
+                                if isinstance(val.get(sub_key), list):
+                                    articles = val[sub_key]
+                                    break
+                            if articles:
+                                break
 
                 posts = []
                 for item in articles[:limit]:
-                    title = item.get("title") or item.get("subject") or "제목 없음"
-                    article_id = item.get("articleId") or item.get("id")
+                    if not isinstance(item, dict):
+                        continue
+                        
+                    article_id = item.get("articleId") or item.get("id") or item.get("article_id")
+                    title = item.get("title") or item.get("subject") or item.get("name") or "제목 없음"
                     
                     link = f"https://aion2.plaync.com/ko-kr/board/cmstory/view?articleId={article_id}" if article_id else "https://aion2.plaync.com/ko-kr/board/cmstory/list"
                     
                     posts.append({
                         "id": str(article_id),
-                        "title": title.strip(),
+                        "title": str(title).strip(),
                         "link": link
                     })
                     
+                print(f"[DEBUG] 파싱 완료된 게시글 수: {len(posts)}개", flush=True)
                 return posts
 
         except Exception as e:
-            print(f"[ERROR] API 요청 오류: {e}", flush=True)
+            print(f"[ERROR] API 데이터 수신 실패:", flush=True)
+            traceback.print_exc()
             return []
 
 # --------------------------------------------------
@@ -127,7 +148,7 @@ async def auto_check_update():
         new_posts.append(post)
 
     if new_posts:
-        last_seen_id = new_posts[0]['link']
+        last_seen_id = new_posts[0]['id']
         for post in reversed(new_posts):
             await channel.send(f"📢 **[새 게시글] {post['title']}**\n🔗 {post['link']}")
 
