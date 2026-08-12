@@ -51,7 +51,6 @@ async def summarize_with_gemini(title, content):
     if len(text_to_summarize) < 30:
         text_to_summarize = f"제목: {title}"
 
-    # 3줄 제한을 없애고 중요 내용(점검시간, 패치내역, 이벤트 등)을 더 상세히 담도록 프롬프트 수정
     prompt = (
         "너는 아이온2 디스코드 알림 봇이야. 아래 게임 공지사항/게시글을 읽고 유저들이 꼭 알아야 할 중요한 내용을 알차게 정리해줘.\n"
         "조건:\n"
@@ -67,17 +66,22 @@ async def summarize_with_gemini(title, content):
 
     for model_name in candidate_models:
         try:
-            response = await loop.run_in_executor(
-                None,
-                lambda m=model_name: client.models.generate_content(
-                    model=m,
-                    contents=prompt
-                )
+            # 10초 타임아웃 설정 (지연 방지)
+            def call_api(m=model_name):
+                return client.models.generate_content(model=m, contents=prompt)
+
+            response = await asyncio.wait_for(
+                loop.run_in_executor(None, call_api),
+                timeout=10.0
             )
+
             if response and response.text:
                 elapsed = time.time() - start_time
                 print(f"[INFO] AI 요약 성공 (사용 모델: {model_name}, 소요시간: {elapsed:.2f}초)", flush=True)
                 return response.text.strip()
+
+        except asyncio.TimeoutError:
+            print(f"[WARN] {model_name} 모델 10초 타임아웃 초과, 다음 모델 시도 중...", flush=True)
         except Exception as e:
             print(f"[WARN] {model_name} 모델 호출 실패, 다음 모델 시도 중... (사유: {e})", flush=True)
 
@@ -111,7 +115,9 @@ async def check_command(ctx):
         "점검 전 캐릭터를 안전한 장소로 이동시켜 주시기 바랍니다."
     )
     test_url = "https://aion2.plaync.com/ko-kr/board/cm_story/list" 
-    test_image_url = None
+    
+    # !확인 명령어로 테스트할 때 노출시킬 샘플 이미지 URL (원래 크롤링 시에는 게시글의 진짜 썸네일 URL 입력)
+    test_image_url = "https://f2.plaync.com/aion2/v2/og_image.png"
 
     summary = await summarize_with_gemini(test_title, test_content)
     
@@ -129,6 +135,7 @@ async def check_command(ctx):
     
     embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({test_url})", inline=False)
     
+    # 썸네일 이미지 설정
     if test_image_url:
         embed.set_image(url=test_image_url)
         
