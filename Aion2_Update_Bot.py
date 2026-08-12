@@ -59,17 +59,18 @@ def clean_html(text):
     return clean.strip()
 
 # --------------------------------------------------
-# 3. Gemini AI 3줄 요약 함수
+# 3. Gemini AI 3줄 요약 함수 (상세 에러 출력 적용)
 # --------------------------------------------------
 async def summarize_with_gemini(title, content):
     if not GEMINI_API_KEY:
+        print("[WARN] GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.", flush=True)
         return None
 
-    # 요약할 본문 텍스트 준비
     text_to_summarize = clean_html(content)
     if len(text_to_summarize) < 30:
         text_to_summarize = f"제목: {title}"
 
+    # 안정적인 gemini-1.5-flash 모델 사용
     gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     prompt = (
@@ -93,10 +94,11 @@ async def summarize_with_gemini(title, content):
                     summary_text = res_json['candidates'][0]['content']['parts'][0]['text']
                     return summary_text.strip()
                 else:
-                    print(f"[WARN] Gemini API 호출 실패 (코드: {response.status})", flush=True)
+                    err_text = await response.text()
+                    print(f"[WARN] Gemini API 호출 실패 (코드: {response.status}, 내용: {err_text})", flush=True)
                     return None
         except Exception as e:
-            print(f"[WARN] AI 요약 생성 중 오류: {e}", flush=True)
+            print(f"[WARN] AI 요약 생성 중 예외 발생: {e}", flush=True)
             return None
 
 # --------------------------------------------------
@@ -139,13 +141,11 @@ def extract_post_info(item):
         or item.get("title") or item.get("subject") or item.get("name")
     )
 
-    # 본문 텍스트 추출 (요약용)
     raw_content = (
         target.get("contents") or target.get("content") or target.get("body") or
         target.get("summary") or item.get("contents") or item.get("content") or ""
     )
 
-    # 썸네일 이미지 URL 추출
     image_url = (
         target.get("thumbnailUrl") or target.get("thumbnail") or 
         target.get("imageUrl") or target.get("image") or 
@@ -207,7 +207,7 @@ async def fetch_latest_posts(limit=5):
             return []
 
 # --------------------------------------------------
-# 6. 자동 알림 감지 (AI 요약 포함)
+# 6. 자동 알림 감지
 # --------------------------------------------------
 @bot.event
 async def on_ready():
@@ -250,7 +250,6 @@ async def auto_check_update():
                 color=discord.Color.blue()
             )
             
-            # AI 3줄 요약 생성
             summary = await summarize_with_gemini(post['title'], post['content'])
             if summary:
                 embed.add_field(name="📝 **AI 3줄 요약**", value=summary, inline=False)
