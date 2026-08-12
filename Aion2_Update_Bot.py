@@ -39,7 +39,7 @@ CHANNEL_ID_ENV = os.getenv('DISCORD_CHANNEL_ID')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # Gemini 모델 지정 (404 지속 시 'gemini-2.0-flash' 또는 'gemini-1.5-flash'로 변경 가능)
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-1.5-flash"
 
 NOTIFICATION_CHANNEL_ID = int(CHANNEL_ID_ENV) if CHANNEL_ID_ENV and CHANNEL_ID_ENV.isdigit() else None
 
