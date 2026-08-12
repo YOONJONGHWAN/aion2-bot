@@ -15,6 +15,7 @@ from google import genai
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 
+# 최신 구글 GenAI 클라이언트 생성
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # --------------------------------------------------
@@ -59,6 +60,7 @@ async def summarize_with_gemini(title, content):
         f"[내용]: {text_to_summarize[:1500]}"
     )
 
+    # CMD 테스트로 검증된 모델 우선 적용
     candidate_models = ['gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite']
     loop = asyncio.get_running_loop()
 
@@ -102,12 +104,13 @@ async def check_command(ctx):
     
     test_title = "아이온2 정기 점검 및 업데이트 안내"
     test_content = "신규 던전 추가 및 클래스 밸런스 패치가 진행됩니다. 서버 점검 시간은 오전 6시부터 10시까지입니다."
-    test_url = "https://aion2.plaync.com"  # 공지사항 실제 URL
-    test_image_url = "https://f2.plaync.com/aion2/v2/og_image.png"  # 대표 이미지 URL
+    
+    # 지정하신 CM 스토리 게시판 주소 적용
+    test_url = "https://aion2.plaync.com/ko-kr/board/cm_story/list" 
+    test_image_url = "https://cdn.discordapp.com/embed/avatars/0.png"
 
     summary = await summarize_with_gemini(test_title, test_content)
     
-    # Embed에 URL 링크 연결 (제목 클릭 시 공지로 이동)
     embed = discord.Embed(
         title=f"📢 {test_title}", 
         url=test_url, 
@@ -120,10 +123,8 @@ async def check_command(ctx):
         embed.add_field(name="📝 공지 내용", value=test_content, inline=False)
         embed.set_footer(text="⚠️ AI 요약 생성 실패 (Render 로그를 확인해 주세요)")
     
-    # 🔗 클릭 가능한 링크 추가
     embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({test_url})", inline=False)
     
-    # 🖼️ 이미지 추가
     if test_image_url:
         embed.set_image(url=test_image_url)
         
