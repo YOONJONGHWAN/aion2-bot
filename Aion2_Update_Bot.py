@@ -39,7 +39,6 @@ NOTIFICATION_CHANNEL_ID = int(CHANNEL_ID_ENV) if CHANNEL_ID_ENV and CHANNEL_ID_E
 
 API_URL = "https://api-community.plaync.com/aion2/board/cm_story_ko/article/search/moreArticle?isVote=true&moreSize=18&moreDirection=BEFORE&previousArticleId=0"
 
-# 일반 브라우저 완전 위장용 헤더 보강
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "Referer": "https://aion2.plaync.com/",
@@ -51,7 +50,58 @@ HEADERS = {
 last_seen_id = None
 
 # --------------------------------------------------
-# 3. API 직접 호출 함수 (다중 JSON 구조 보완 및 로그 강화)
+# 3. JSON 탐색 및 파싱 헬퍼 함수
+# --------------------------------------------------
+def find_articles_list(obj):
+    """JSON 객체 구조 내부를 자동 탐색하여 게시글 배열(List)을 추출"""
+    if isinstance(obj, list):
+        if len(obj) > 0 and isinstance(obj[0], dict):
+            return obj
+        return []
+    if isinstance(obj, dict):
+        # 알려진 주요 키 우선 탐색
+        for key in ["list", "articles", "contents", "documents", "data", "result"]:
+            if key in obj:
+                res = find_articles_list(obj[key])
+                if res:
+                    return res
+        # 전체 딕셔너리 순회 탐색
+        for k, v in obj.items():
+            res = find_articles_list(v)
+            if res:
+                return res
+    return []
+
+def extract_post_info(item):
+    """게시글 아이템에서 Title 및 ID 추출 (중첩 객체 지원)"""
+    if not isinstance(item, dict):
+        return None
+    
+    target = item
+    if "article" in item and isinstance(item["article"], dict):
+        target = item["article"]
+    elif "data" in item and isinstance(item["data"], dict):
+        target = item["data"]
+
+    article_id = (
+        target.get("articleId") or target.get("id") or target.get("article_id")
+        or item.get("articleId") or item.get("id") or item.get("article_id")
+    )
+    
+    title = (
+        target.get("title") or target.get("subject") or target.get("name")
+        or item.get("title") or item.get("subject") or item.get("name")
+    )
+
+    if article_id or title:
+        return {
+            "id": str(article_id) if article_id else "0",
+            "title": str(title).strip() if title else "제목 없음"
+        }
+    return None
+
+# --------------------------------------------------
+# 4. API 직접 호출 함수
 # --------------------------------------------------
 async def fetch_latest_posts(limit=5):
     async with aiohttp.ClientSession() as session:
@@ -60,55 +110,39 @@ async def fetch_latest_posts(limit=5):
                 print(f"[DEBUG] API 응답 상태 코드: {response.status}", flush=True)
                 
                 if response.status != 200:
-                    print(f"[ERROR] API 요청 차단됨 (상태 코드: {response.status})", flush=True)
+                    print(f"[ERROR] API 요청 실패 (상태 코드: {response.status})", flush=True)
                     return []
                 
                 data = await response.json()
                 
-                # 다양한 계층의 JSON 배열 구조 유연하게 탐색
-                articles = []
-                if isinstance(data, list):
-                    articles = data
-                elif isinstance(data, dict):
-                    for key in ["list", "articles", "contents", "documents", "data", "result"]:
-                        val = data.get(key)
-                        if isinstance(val, list):
-                            articles = val
-                            break
-                        elif isinstance(val, dict):
-                            for sub_key in ["list", "articles", "contents", "documents"]:
-                                if isinstance(val.get(sub_key), list):
-                                    articles = val[sub_key]
-                                    break
-                            if articles:
-                                break
+                articles_raw = find_articles_list(data)
+                
+                if not articles_raw:
+                    # 데이터 구조 파악용 원본 출력
+                    print(f"[DEBUG] JSON 구조 분석용 데이터 샘플: {str(data)[:300]}", flush=True)
 
                 posts = []
-                for item in articles[:limit]:
-                    if not isinstance(item, dict):
-                        continue
-                        
-                    article_id = item.get("articleId") or item.get("id") or item.get("article_id")
-                    title = item.get("title") or item.get("subject") or item.get("name") or "제목 없음"
+                for item in articles_raw[:limit]:
+                    info = extract_post_info(item)
+                    if info:
+                        article_id = info["id"]
+                        link = f"https://aion2.plaync.com/ko-kr/board/cmstory/view?articleId={article_id}" if article_id != "0" else "https://aion2.plaync.com/ko-kr/board/cmstory/list"
+                        posts.append({
+                            "id": article_id,
+                            "title": info["title"],
+                            "link": link
+                        })
                     
-                    link = f"https://aion2.plaync.com/ko-kr/board/cmstory/view?articleId={article_id}" if article_id else "https://aion2.plaync.com/ko-kr/board/cmstory/list"
-                    
-                    posts.append({
-                        "id": str(article_id),
-                        "title": str(title).strip(),
-                        "link": link
-                    })
-                    
-                print(f"[DEBUG] 파싱 완료된 게시글 수: {len(posts)}개", flush=True)
+                print(f"[DEBUG] 최종 추출된 게시글 수: {len(posts)}개", flush=True)
                 return posts
 
         except Exception as e:
-            print(f"[ERROR] API 데이터 수신 실패:", flush=True)
+            print(f"[ERROR] API 데이터 수신/파싱 오류 발생:", flush=True)
             traceback.print_exc()
             return []
 
 # --------------------------------------------------
-# 4. 이벤트 및 자동 감지 로직
+# 5. 이벤트 및 자동 감지 로직
 # --------------------------------------------------
 @bot.event
 async def on_ready():
@@ -153,7 +187,7 @@ async def auto_check_update():
             await channel.send(f"📢 **[새 게시글] {post['title']}**\n🔗 {post['link']}")
 
 # --------------------------------------------------
-# 5. 수동 명령어 (!확인)
+# 6. 수동 명령어 (!확인)
 # --------------------------------------------------
 @bot.command(name='확인')
 async def check_update(ctx):
@@ -169,7 +203,7 @@ async def check_update(ctx):
         await ctx.send("게시글을 불러오지 못했습니다.")
 
 # --------------------------------------------------
-# 6. 실행
+# 7. 실행
 # --------------------------------------------------
 if __name__ == "__main__":
     keep_alive()
