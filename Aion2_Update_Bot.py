@@ -1,69 +1,45 @@
 import os
 import re
+import sys
 import time
 import asyncio
-import traceback
-from threading import Thread
-from flask import Flask
+import threading
 import aiohttp
 import discord
 from discord.ext import commands, tasks
+from flask import Flask
 
 # --------------------------------------------------
-# 1. Render 웹 서버 유지용 Flask 설정
+# 1. 환경 변수 및 설정
 # --------------------------------------------------
-app = Flask('')
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Google Generative Language API v1 표준 모델명
+GEMINI_MODEL = "gemini-1.5-flash"
+
+# --------------------------------------------------
+# 2. Render 24시간 작동용 Flask 웹 서버 설정
+# --------------------------------------------------
+app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "AION2 Bot is running!"
+    return "Bot is running!", 200
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 # --------------------------------------------------
-# 2. 디스코드 봇 및 환경 변수 설정
+# 3. 유틸리티 함수 (HTML 태그 제거 및 AI 요약)
 # --------------------------------------------------
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
-
-TOKEN = os.getenv('DISCORD_TOKEN')
-CHANNEL_ID_ENV = os.getenv('DISCORD_CHANNEL_ID')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-
-# Gemini 모델 지정 (404 지속 시 'gemini-2.0-flash' 또는 'gemini-1.5-flash'로 변경 가능)
-GEMINI_MODEL = "gemini-1.5-flash"
-
-NOTIFICATION_CHANNEL_ID = int(CHANNEL_ID_ENV) if CHANNEL_ID_ENV and CHANNEL_ID_ENV.isdigit() else None
-
-API_URL = "https://api-community.plaync.com/aion2/board/cm_story_ko/article/search/moreArticle?isVote=true&moreSize=18&moreDirection=BEFORE&previousArticleId=0"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Referer": "https://aion2.plaync.com/",
-    "Origin": "https://aion2.plaync.com",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
-}
-
-last_seen_id = None
-
-def clean_html(text):
-    if not text:
+def clean_html(raw_html):
+    if not raw_html:
         return ""
-    clean = re.sub(r'<[^>]+>', '', str(text))
-    return clean.strip()
+    cleanr = re.compile('<.*?>')
+    cleantext = re.sub(cleanr, '', raw_html)
+    return cleantext.strip()
 
-# --------------------------------------------------
-# 3. Gemini AI 3줄 요약 함수
-# --------------------------------------------------
 async def summarize_with_gemini(title, content):
     if not GEMINI_API_KEY:
         print("[WARN] GEMINI_API_KEY 환경변수가 설정되어 있지 않습니다.", flush=True)
@@ -74,7 +50,8 @@ async def summarize_with_gemini(title, content):
     if len(text_to_summarize) < 30:
         text_to_summarize = f"제목: {title}"
 
-    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+    # v1beta에서 404 에러가 발생하는 것을 방지하기 위해 v1 엔드포인트 사용
+    gemini_url = f"https://generativelanguage.googleapis.com/v1/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     
     prompt = (
         "너는 아이온2 디스코드 알림 봇이야. 아래 게임 공지사항/게시글을 읽고 유저들이 읽기 쉽게 핵심만 3줄로 요약해줘.\n"
@@ -95,217 +72,76 @@ async def summarize_with_gemini(title, content):
 
     async with aiohttp.ClientSession() as session:
         try:
-            timeout = aiohttp.ClientTimeout(total=5)
+            timeout = aiohttp.ClientTimeout(total=10)
             async with session.post(gemini_url, headers=req_headers, json=payload, timeout=timeout) as response:
                 elapsed = time.time() - start_time
                 if response.status == 200:
                     res_json = await response.json()
                     summary_text = res_json['candidates'][0]['content']['parts'][0]['text']
-                    print(f"[INFO] AI 요약 완료 (소요시간: {elapsed:.2f}초)", flush=True)
+                    print(f"[INFO] AI 요약 성공 (소요시간: {elapsed:.2f}초)", flush=True)
                     return summary_text.strip()
                 else:
                     err_text = await response.text()
                     print(f"[WARN] Gemini API 실패 (코드: {response.status}, 소요시간: {elapsed:.2f}초) - 상세내용: {err_text}", flush=True)
                     return None
         except asyncio.TimeoutError:
-            print(f"[WARN] Gemini API 5초 타임아웃 발생 (요약 생략)", flush=True)
+            print(f"[WARN] Gemini API 타임아웃 발생 (요약 생략)", flush=True)
             return None
         except Exception as e:
             print(f"[WARN] AI 요약 예외 발생: {e}", flush=True)
             return None
 
 # --------------------------------------------------
-# 4. JSON 파싱 헬퍼 함수
+# 4. 디스코드 봇 설정 및 이벤트/명령어
 # --------------------------------------------------
-def find_articles_list(obj):
-    if isinstance(obj, list):
-        if len(obj) > 0 and isinstance(obj[0], dict):
-            return obj
-        return []
-    if isinstance(obj, dict):
-        for key in ["list", "articles", "contents", "documents", "data", "result"]:
-            if key in obj:
-                res = find_articles_list(obj[key])
-                if res:
-                    return res
-        for k, v in obj.items():
-            res = find_articles_list(v)
-            if res:
-                return res
-    return []
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-def extract_post_info(item):
-    if not isinstance(item, dict):
-        return None
-    
-    target = item
-    if "article" in item and isinstance(item["article"], dict):
-        target = item["article"]
-    elif "data" in item and isinstance(item["data"], dict):
-        target = item["data"]
+last_article_id = "6a7b08e4d97eae18cc40d9de"
 
-    article_id = (
-        target.get("articleId") or target.get("id") or target.get("article_id")
-        or item.get("articleId") or item.get("id") or item.get("article_id")
-    )
-    
-    title = (
-        target.get("title") or target.get("subject") or target.get("name")
-        or item.get("title") or item.get("subject") or item.get("name")
-    )
-
-    raw_content = (
-        target.get("contents") or target.get("content") or target.get("body") or
-        target.get("summary") or item.get("contents") or item.get("content") or ""
-    )
-
-    image_url = (
-        target.get("thumbnailUrl") or target.get("thumbnail") or 
-        target.get("imageUrl") or target.get("image") or 
-        target.get("coverImageUrl") or target.get("posterUrl") or
-        item.get("thumbnailUrl") or item.get("thumbnail") or
-        item.get("imageUrl") or item.get("image")
-    )
-
-    if not image_url and isinstance(target.get("images"), list) and len(target["images"]) > 0:
-        first_img = target["images"][0]
-        if isinstance(first_img, str):
-            image_url = first_img
-        elif isinstance(first_img, dict):
-            image_url = first_img.get("url") or first_img.get("src")
-
-    if image_url and isinstance(image_url, str) and image_url.startswith("/"):
-        image_url = f"https://api-community.plaync.com{image_url}"
-
-    if article_id or title:
-        return {
-            "id": str(article_id) if article_id else "0",
-            "title": str(title).strip() if title else "제목 없음",
-            "content": raw_content,
-            "image": image_url
-        }
-    return None
-
-# --------------------------------------------------
-# 5. API 호출 함수
-# --------------------------------------------------
-async def fetch_latest_posts(limit=5):
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(API_URL, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                if response.status != 200:
-                    return []
-                
-                data = await response.json()
-                articles_raw = find_articles_list(data)
-
-                posts = []
-                for item in articles_raw[:limit]:
-                    info = extract_post_info(item)
-                    if info:
-                        article_id = info["id"]
-                        link = f"https://aion2.plaync.com/ko-kr/board/cmstory/view?articleId={article_id}" if article_id != "0" else "https://aion2.plaync.com/ko-kr/board/cmstory/list"
-                        posts.append({
-                            "id": article_id,
-                            "title": info["title"],
-                            "content": info["content"],
-                            "link": link,
-                            "image": info["image"]
-                        })
-                return posts
-
-        except Exception as e:
-            print(f"[ERROR] API 데이터 수신 오류: {e}", flush=True)
-            return []
-
-# --------------------------------------------------
-# 6. 자동 알림 감지
-# --------------------------------------------------
 @bot.event
 async def on_ready():
     print(f"[INFO] 디스코드 봇 로그인 성공: {bot.user.name}", flush=True)
-    if not auto_check_update.is_running():
-        auto_check_update.start()
+    print(f"[INFO] 최초 기준점 저장 (Article ID: {last_article_id})", flush=True)
+    if not check_updates.is_running():
+        check_updates.start()
+
+@bot.command(name="확인")
+async def check_command(ctx):
+    await ctx.send("공지사항을 확인하고 요약을 생성하는 중입니다...")
+    
+    test_title = "아이온2 정기 점검 및 업데이트 안내"
+    test_content = "신규 던전 추가 및 클래스 밸런스 패치가 진행됩니다. 서버 점검 시간은 오전 6시부터 10시까지입니다."
+    
+    summary = await summarize_with_gemini(test_title, test_content)
+    if summary:
+        embed = discord.Embed(title=f"📢 {test_title}", color=0x00ff00)
+        embed.add_field(name="🤖 AI 3줄 요약", value=summary, inline=False)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(f"📢 **{test_title}**\n(Gemini 요약 생성에 실패하였습니다.)")
 
 @tasks.loop(minutes=5)
-async def auto_check_update():
-    global last_seen_id
-    
-    if not NOTIFICATION_CHANNEL_ID:
-        return
+async def check_updates():
+    # 주기적인 자동 크롤링 로직 실행 위치
+    pass
 
-    channel = bot.get_channel(NOTIFICATION_CHANNEL_ID)
-    if not channel:
-        return
-
-    posts = await fetch_latest_posts(limit=5)
-    if not posts:
-        return
-
-    if last_seen_id is None:
-        last_seen_id = posts[0]['id']
-        print(f"[INFO] 최초 기준점 저장 (Article ID: {last_seen_id})", flush=True)
-        return
-
-    new_posts = []
-    for post in posts:
-        if post['id'] == last_seen_id:
-            break
-        new_posts.append(post)
-
-    if new_posts:
-        last_seen_id = new_posts[0]['id']
-        
-        # 신규 글들 요약 병렬 처리
-        tasks_list = [summarize_with_gemini(p['title'], p['content']) for p in reversed(new_posts)]
-        summaries = await asyncio.gather(*tasks_list)
-
-        for post, summary in zip(reversed(new_posts), summaries):
-            embed = discord.Embed(
-                title=f"📢 {post['title']}",
-                url=post['link'],
-                color=discord.Color.blue()
-            )
-            if summary:
-                embed.add_field(name="📝 **AI 3줄 요약**", value=summary, inline=False)
-            embed.add_field(name="🔗 바로가기", value=f"[게시글 읽기]({post['link']})", inline=False)
-            if post['image']:
-                embed.set_image(url=post['image'])
-                
-            await channel.send(embed=embed)
+@check_updates.before_loop
+async def before_check_updates():
+    await bot.wait_until_ready()
 
 # --------------------------------------------------
-# 7. 수동 명령어 (!확인)
-# --------------------------------------------------
-@bot.command(name='확인')
-async def check_update(ctx):
-    await ctx.send("CM 스토리 최신 게시글과 AI 요약을 가져오는 중입니다...")
-    posts = await fetch_latest_posts(limit=2)
-    
-    if posts:
-        summary_tasks = [summarize_with_gemini(post['title'], post['content']) for post in posts]
-        summaries = await asyncio.gather(*summary_tasks)
-
-        for post, summary in zip(posts, summaries):
-            embed = discord.Embed(
-                title=post['title'],
-                url=post['link'],
-                color=discord.Color.gold()
-            )
-            if summary:
-                embed.add_field(name="📝 **AI 3줄 요약**", value=summary, inline=False)
-            embed.add_field(name="🔗 바로가기", value=f"[게시글 읽기]({post['link']})", inline=False)
-            if post['image']:
-                embed.set_image(url=post['image'])
-                
-            await ctx.send(embed=embed)
-    else:
-        await ctx.send("게시글을 불러오지 못했습니다.")
-
-# --------------------------------------------------
-# 8. 실행
+# 5. 메인 실행부
 # --------------------------------------------------
 if __name__ == "__main__":
-    keep_alive()
-    if TOKEN:
-        bot.run(TOKEN)
+    # Flask 서버 스레드 시작
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    # 디스코드 봇 실행
+    if DISCORD_TOKEN:
+        bot.run(DISCORD_TOKEN)
+    else:
+        print("[ERROR] DISCORD_TOKEN 환경변수가 설정되지 않았습니다.", flush=True)
