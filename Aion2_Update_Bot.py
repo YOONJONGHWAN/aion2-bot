@@ -14,6 +14,22 @@ from flask import Flask
 from google import genai
 from playwright.async_api import async_playwright
 
+subprocess.run(
+    [
+        sys.executable,
+        "-m",
+        "playwright",
+        "install",
+        "chromium"
+    ],
+    check=True
+)
+
+print(
+    "[INFO] Playwright Chromium 설치/확인 완료",
+    flush=True
+)
+
 
 # ============================================================
 # 1. 기본 설정
