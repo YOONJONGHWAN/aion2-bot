@@ -201,8 +201,7 @@ async def auto_check_loop():
             logging.error(f"자동 감지 루프 중 에러: {e}")
         await asyncio.sleep(300)
 
-@bot.command(name="확인")
-@bot.command(name="테스트알림")
+@bot.command(name="확인", aliases=["테스트알림"])
 async def test_notification(ctx):
     await ctx.send("🔍 최신 공지사항을 확인하고 요약을 진행 중입니다...")
     try:
