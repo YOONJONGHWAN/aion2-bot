@@ -108,35 +108,49 @@ async def check_new_notices(is_initial=False):
     
     async with async_playwright() as p:
         browser_executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
-        launch_kwargs = {"headless": True, "args": ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]}
+        launch_kwargs = {
+            "headless": True, 
+            "args": [
+                "--no-sandbox", 
+                "--disable-setuid-sandbox", 
+                "--disable-dev-shm-usage", 
+                "--disable-gpu",
+                "--disable-blink-features=AutomationControlled",
+                "--window-size=1920,1080"
+            ]
+        }
         if browser_executable_path:
             launch_kwargs["executable_path"] = browser_executable_path
             
         browser = await p.chromium.launch(**launch_kwargs)
-        page = await browser.new_page()
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
+        )
+        page = await context.new_page()
         
         try:
-            await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="networkidle")
+            await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
             await page.wait_for_timeout(5000)
             
-            # 페이지 내의 모든 링크와 요소를 가져와서 어떤 주소 형태가 있는지 로그로 확인
-            all_links = await page.query_selector_all("a")
-            logging.info(f"페이지 내 발견된 총 링크(a 태그) 개수: {len(all_links)}")
+            # 💡 알려주신 구조(class="title")를 가진 a 태그들을 정확히 타겟팅
+            articles = await page.query_selector_all("a.title")
+            logging.info(f"페이지 내 발견된 공지 제목 링크 개수: {len(articles)}")
             
             current_notices = []
-            for article in all_links:
+            for article in articles:
                 href = await article.get_attribute("href")
                 text = await article.inner_text()
-                if href:
-                    # 디버깅을 위해 상위 몇 개의 링크를 로그에 찍어봄
-                    if len(current_notices) < 5:
-                        logging.info(f"[DEBUG HREQ] href: {href} | text: {text.strip()[:20]}py")
-                        
-                    if "/board/" in href or "view" in href: # 조건을 더 넓혀서 탐색
-                        if not href.startswith("http"):
-                            href = "https://aion2.plaync.com" + href
-                        if text.strip() and href not in [n[1] for n in current_notices]:
-                            current_notices.append((text.strip(), href))
+                
+                if href and "cm_story/view" in href:
+                    if not href.startswith("http"):
+                        href = "https://aion2.plaync.com" + href
+                    
+                    clean_title = text.strip()
+                    if clean_title and href not in [n[1] for n in current_notices]:
+                        current_notices.append((clean_title, href))
+            
+            logging.info(f"유효하게 파싱된 공지 개수: {len(current_notices)}")
             
             if is_initial:
                 for title, link in current_notices:
