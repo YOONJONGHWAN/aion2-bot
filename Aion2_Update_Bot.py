@@ -259,45 +259,62 @@ def choose_image_url(urls):
 
 async def fetch_article_list(page):
     print("[INFO] 게시글 목록 수집 시작...", flush=True)
-    try:
-        # 1. ChatGPT 원래 방식대로 네트워크 통신이 완전히 끝날 때까지 대기
-        await page.goto(BOARD_URL, wait_until="networkidle", timeout=PAGE_TIMEOUT)
 
-        # 2. 게시판 렌더링 추가 안정화 대기 (1.5초)
+    try:
+        # 1. domcontentloaded로 빠른 페이지 접속
+        await page.goto(
+            BOARD_URL,
+            timeout=PAGE_TIMEOUT,
+            wait_until="domcontentloaded"
+        )
+
+        # 2. networkidle 대신 게시글 태그가 화면에 출현할 때까지 최대 10초 대기
+        try:
+            await page.wait_for_selector("a[href*='articleId='], a[href*='/board/']", timeout=10000)
+        except Exception:
+            pass  # 대기 타임아웃이 발생해도 봇이 꺼지지 않고 다음 단계 진행
+
+        # 3. 자바스크립트 렌더링 안정화 1.5초 대기
         await page.wait_for_timeout(1500)
 
-        # 3. ChatGPT 원래 코드처럼 게시글 링크(a 태그) 검색 범위 넓게 설정
-        # (엔씨소프트 게시판 구조에 맞춘 broad selector)
-        links = await page.query_selector_all("a[href*='/board/'], a[href*='articleId'], a[href*='view']")
+        # 4. 게시글 링크 검색
+        links = await page.query_selector_all("a[href*='articleId=']")
+        if not links:
+            links = await page.query_selector_all("a[href*='/board/']")
 
-        # 중복 링크 제거를 위한 집합
-        seen_urls = set()
         articles = []
+        seen_ids = set()
 
-        for a in links:
-            href = await a.get_attribute("href")
-            if not href:
-                continue
+        for link in links:
+            try:
+                href = await link.get_attribute("href")
+                if not href:
+                    continue
 
-            full_url = href if href.startswith("http") else f"{BASE_URL}{href}"
-            
-            # 이미 처리한 동일 URL 스킵
-            if full_url in seen_urls:
-                continue
+                url = normalize_url(href)
+                article_id = extract_article_id(url)
 
-            # ID 추출 (articleId= 숫자 또는 /view/ 숫자 형태 모두 지원)
-            match = re.search(r"(?:articleId=|/view/|/board/)([^&?/]+)", href)
-            if match:
-                art_id = match.group(1)
-                text = (await a.inner_text()).strip()
-                title = text.split("\n")[0] if text else "제목 없음"
+                if not article_id or article_id in seen_ids:
+                    continue
+
+                seen_ids.add(article_id)
+
+                try:
+                    title = clean_text(await link.inner_text())
+                except Exception:
+                    title = ""
 
                 articles.append({
-                    "id": art_id,
-                    "title": title,
-                    "url": full_url
+                    "id": article_id,
+                    "url": url,
+                    "list_title": title
                 })
-                seen_urls.add(full_url)
+
+                if len(articles) >= MAX_ARTICLES_TO_SCAN:
+                    break
+
+            except Exception as e:
+                print(f"[WARN] 게시글 링크 처리 실패: {e}", flush=True)
 
         print(f"[INFO] 게시글 {len(articles)}개 발견", flush=True)
         return articles
