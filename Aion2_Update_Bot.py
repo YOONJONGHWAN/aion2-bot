@@ -34,7 +34,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # 목표 웹사이트 URL
-TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cm_story_list"
+TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
 DETAIL_TIMEOUT = 60000  # 타임아웃 60초로 연장
 
 # 전역 상태 변수
