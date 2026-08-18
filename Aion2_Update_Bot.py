@@ -90,15 +90,16 @@ async def generate_ai_summary(title, content, image_urls):
     return None
 
 async def init_posted_notices():
-    """ 봇이 어떤 링크를 찾고 있는지 확인하는 디버깅용 동기화 함수 """
     global posted_notice_ids
     logging.info("부팅 시 공지사항 목록 확인 중...")
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
             page = await browser.new_page()
-            await page.goto(NOTICE_URL, timeout=20000)
-            await page.wait_for_timeout(5000) # 로딩 시간 5초로 늘림
+            
+            # 아래와 같이 옵션 수정 (timeout 30초, wait_until domcontentloaded)
+            await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
             
             elements = await page.query_selector_all("a")
             logging.info(f"발견된 전체 링크 개수: {len(elements)}")
@@ -106,9 +107,6 @@ async def init_posted_notices():
             for elem in elements:
                 href = await elem.get_attribute("href")
                 if href:
-                    # 모든 링크를 로그에 찍어보기 (나중에 문제 해결되면 이 줄은 지우셔도 됩니다)
-                    # logging.info(f"DEBUG: 발견된 링크 -> {href}") 
-                    
                     if ('/board/' in href or 'notice' in href) and ('detail' in href or 'view' in href):
                         full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
                         posted_notice_ids.add(full_url.split("?")[0])
@@ -125,11 +123,11 @@ async def scrape_and_process_notices(is_test=False):
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         page = await context.new_page()
         try:
-            await page.goto(NOTICE_URL, timeout=20000)
-            await page.wait_for_timeout(3000) # 렌더링 대기
+            # 이 부분도 동일하게 수정
+            await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
             
             elements = await page.query_selector_all("a")
-            
             targets = []
             seen_urls = set()
             
@@ -140,7 +138,6 @@ async def scrape_and_process_notices(is_test=False):
                 if not href or not title or len(title) < 2:
                     continue
                 
-                # 공지 상세 페이지 링크 패턴 필터링
                 if ('/board/' in href or 'notice' in href) and ('detail' in href or 'view' in href):
                     full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
                     notice_id = full_url.split("?")[0]
