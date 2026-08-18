@@ -133,7 +133,14 @@ async def check_new_notices(is_initial=False):
             await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
             await page.wait_for_timeout(5000)
             
-            # 💡 알려주신 구조(class="title")를 가진 a 태그들을 정확히 타겟팅
+            # 💡 핵심 확인: 현재 브라우저가 실제로 보고 있는 페이지의 제목과 소스 일부 출력
+            page_title = await page.title()
+            logging.info(f"현재 페이지 타이틀: {page_title}")
+            
+            # 페이지 HTML의 상위 500자 출력 (차단 페이지인지, 빈 페이지인지 확인용)
+            content_snippet = await page.content()
+            logging.info(f"페이지 HTML 일부: {content_snippet[:300]}...")
+
             articles = await page.query_selector_all("a.title")
             logging.info(f"페이지 내 발견된 공지 제목 링크 개수: {len(articles)}")
             
