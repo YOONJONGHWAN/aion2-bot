@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 시스템 필수 패키지 및 오디오/브라우저 라이브러리 설치
+# 1. 필수 시스템 패키지 설치
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libnss3 \
@@ -25,7 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+# 2. 플레이라이트 환경 변수 및 설치 강제화
+# 브라우저를 /app/ms-playwright에 설치하여 경로 문제 차단
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/ms-playwright
 RUN playwright install chromium
 
 COPY . .
