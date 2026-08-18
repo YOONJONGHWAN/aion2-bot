@@ -97,7 +97,6 @@ async def init_posted_notices():
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
             page = await browser.new_page()
             
-            # 아래와 같이 옵션 수정 (timeout 30초, wait_until domcontentloaded)
             await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
             
@@ -107,9 +106,10 @@ async def init_posted_notices():
             for elem in elements:
                 href = await elem.get_attribute("href")
                 if href:
-                    if ('/board/' in href or 'notice' in href) and ('detail' in href or 'view' in href):
+                    # articleId가 포함된 링크를 유효한 공지로 인식
+                    if 'articleId=' in href or 'view' in href or 'detail' in href:
                         full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                        posted_notice_ids.add(full_url.split("?")[0])
+                        posted_notice_ids.add(full_url) # 전체 URL을 고유 ID로 사용
                         
             await browser.close()
             logging.info(f"동기화 완료: 총 {len(posted_notice_ids)}개의 유효 공지 확인됨")
@@ -123,7 +123,6 @@ async def scrape_and_process_notices(is_test=False):
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         page = await context.new_page()
         try:
-            # 이 부분도 동일하게 수정
             await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
             await page.wait_for_timeout(3000)
             
@@ -138,9 +137,9 @@ async def scrape_and_process_notices(is_test=False):
                 if not href or not title or len(title) < 2:
                     continue
                 
-                if ('/board/' in href or 'notice' in href) and ('detail' in href or 'view' in href):
+                if 'articleId=' in href or 'view' in href or 'detail' in href:
                     full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                    notice_id = full_url.split("?")[0]
+                    notice_id = full_url # 전체 URL을 고유 ID로 사용
                     
                     if notice_id in seen_urls: 
                         continue
