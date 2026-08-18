@@ -4,6 +4,7 @@ import sys
 import time
 import asyncio
 import threading
+import subprocess
 import discord
 from discord.ext import commands, tasks
 from flask import Flask
@@ -11,12 +12,21 @@ from google import genai
 from playwright.async_api import async_playwright
 
 # --------------------------------------------------
+# 0. Playwright Chromium 자동 설치 체크
+# --------------------------------------------------
+try:
+    print("[INFO] Playwright Chromium 브라우저 설치 상태 확인 중...", flush=True)
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    print("[INFO] Playwright Chromium 준비 완료!", flush=True)
+except Exception as e:
+    print(f"[WARN] Playwright 브라우저 자동 설치 중 문제 발생: {e}", flush=True)
+
+# --------------------------------------------------
 # 1. 환경 변수 및 구글 AI SDK 설정
 # --------------------------------------------------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
-# 자동 알림을 전송할 디스코드 채널 ID (Render Environment에 DISCORD_CHANNEL_ID 추가 필요)
-CHANNEL_ID = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
@@ -82,7 +92,7 @@ async def summarize_with_gemini(title, content):
                 return response.text.strip()
 
         except asyncio.TimeoutError:
-            print(f"[WARN] {model_name} 모델 타임아웃 초과, 다음 모델 시도 중...", flush=True)
+            print(f"[WARN] {model_name} 모델 12초 타임아웃 초과, 다음 모델 시도 중...", flush=True)
         except Exception as e:
             print(f"[WARN] {model_name} 모델 호출 실패, 다음 모델 시도 중... (사유: {e})", flush=True)
 
@@ -95,7 +105,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-last_article_id = None  # 감지된 최신 게시글 ID 저장 변수
+last_article_id = None
+BOARD_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
 
 @bot.event
 async def on_ready():
@@ -105,105 +116,117 @@ async def on_ready():
 
 @bot.command(name="확인")
 async def check_command(ctx):
-    await ctx.send("공지사항 수동 확인을 진행합니다...")
-    await fetch_and_notify(target_channel=ctx.channel, force_send=True)
+    await ctx.send("공지사항을 확인하고 요약을 생성하는 중입니다...")
+    
+    test_title = "아이온2 정기 점검 및 업데이트 안내"
+    test_content = (
+        "신규 던전 '파멸의 신전'이 추가되며 클래스 밸런스 패치가 진행됩니다. "
+        "서버 점검 시간은 오전 6시부터 10시까지 총 4시간 동안 진행되며, "
+        "점검 보상으로 신성한 수호석 10개와 경험치 부스터가 지급됩니다."
+    )
+    test_url = BOARD_URL
+    test_image_url = "https://f2.plaync.com/aion2/v2/og_image.png"
+
+    summary = await summarize_with_gemini(test_title, test_content)
+    
+    embed = discord.Embed(title=f"📢 {test_title}", url=test_url, color=0x00ff00)
+    
+    if summary:
+        embed.add_field(name="🤖 AI 주요 내용 요약", value=summary, inline=False)
+    else:
+        embed.add_field(name="📝 공지 내용", value=test_content, inline=False)
+        embed.set_footer(text="⚠️ AI 요약 생성 실패 (Render 로그를 확인해 주세요)")
+    
+    embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({test_url})", inline=False)
+    if test_image_url:
+        embed.set_image(url=test_image_url)
+        
+    await ctx.send(embed=embed)
 
 # --------------------------------------------------
-# 5. Playwright 웹 크롤링 및 공지 감지 로직
+# 5. 5분 주기 크롤링 및 새 글 자동 감지 로직
 # --------------------------------------------------
-async def fetch_and_notify(target_channel=None, force_send=False):
+@tasks.loop(minutes=5)
+async def check_updates():
     global last_article_id
+    
+    if not CHANNEL_ID:
+        print("[WARN] DISCORD_CHANNEL_ID 환경변수가 설정되지 않았습니다.", flush=True)
+        return
 
-    url = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
+    channel = bot.get_channel(int(CHANNEL_ID))
+    if not channel:
+        print(f"[WARN] 채널을 찾을 수 없습니다. (Channel ID: {CHANNEL_ID})", flush=True)
+        return
 
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            await asyncio.sleep(3)  # 동적 콘텐츠 로딩 대기
+            
+            await page.goto(BOARD_URL, timeout=30000)
+            await page.wait_for_selector("a[href*='articleId=']", timeout=15000)
 
-            # 목록에서 첫 번째 게시글 요소 탐색
             articles = await page.query_selector_all("a[href*='articleId=']")
             if not articles:
-                print("[WARN] 게시글 목록을 찾을 수 없습니다.", flush=True)
                 await browser.close()
                 return
 
-            latest_article = articles[0]
-            href = await latest_article.get_attribute("href")
+            first_article = articles[0]
+            href = await first_article.get_attribute("href")
             
-            # Article ID 추출
-            article_id_match = re.search(r'articleId=([a-zA-Z0-9]+)', href or "")
-            current_id = article_id_match.group(1) if article_id_match else href
-
-            # 최신 글 여부 확인 (최초 실행 시에는 기준점만 저장)
-            if last_article_id is None and not force_send:
-                last_article_id = current_id
-                print(f"[INFO] 최초 기준 게시글 ID 저장: {last_article_id}", flush=True)
+            match = re.search(r'articleId=([a-zA-Z0-9]+)', href)
+            if not match:
                 await browser.close()
                 return
 
-            if current_id == last_article_id and not force_send:
-                print("[INFO] 새로운 공지사항이 없습니다.", flush=True)
+            current_article_id = match.group(1)
+            full_url = f"https://aion2.plaync.com{href}" if href.startswith('/') else href
+
+            if last_article_id is None:
+                last_article_id = current_article_id
+                print(f"[INFO] 최초 기준 공지 ID 저장: {last_article_id}", flush=True)
                 await browser.close()
                 return
 
-            # 새 글 발견 시 상세 페이지 클릭하여 본문 수집
-            detail_url = f"https://aion2.plaync.com{href}" if href.startswith('/') else href
-            await page.goto(detail_url, timeout=60000, wait_until="domcontentloaded")
-            await asyncio.sleep(2)
+            if current_article_id != last_article_id:
+                print(f"[NEW] 새 공지사항 감지! (ID: {current_article_id})", flush=True)
+                
+                await page.goto(full_url, timeout=30000)
+                await asyncio.sleep(2)
 
-            # 제목, 본문, 이미지 추출
-            title_el = await page.query_selector("h1, .title, .board-view__title")
-            title = await title_el.inner_text() if title_el else "아이온2 신규 공지사항"
+                title_el = await page.query_selector("h1, .title, .board-title")
+                title = await title_el.inner_text() if title_el else "아이온2 신규 공지사항"
 
-            content_el = await page.query_selector(".board-view__content, .contents, .article-body")
-            content = await content_el.inner_text() if content_el else ""
+                content_el = await page.query_selector(".contents, .board-contents, .article-body")
+                content = await content_el.inner_text() if content_el else ""
 
-            img_el = await page.query_selector(".board-view__content img, .article-body img")
-            img_url = await img_el.get_attribute("src") if img_el else None
+                img_el = await page.query_selector(".contents img, .board-contents img, .article-body img")
+                image_url = await img_el.get_attribute("src") if img_el else None
 
-            await browser.close()
+                await browser.close()
 
-            # AI 요약 생성
-            summary = await summarize_with_gemini(title, content)
+                summary = await summarize_with_gemini(title, content)
 
-            # 디스코드 임베드 생성
-            embed = discord.Embed(
-                title=f"📢 {title}",
-                url=detail_url,
-                color=0x00ff00
-            )
+                embed = discord.Embed(title=f"📢 {title.strip()}", url=full_url, color=0x00ff00)
+                
+                if summary:
+                    embed.add_field(name="🤖 AI 주요 내용 요약", value=summary, inline=False)
+                else:
+                    embed.add_field(name="📝 공지 내용", value=clean_html(content)[:500], inline=False)
 
-            if summary:
-                embed.add_field(name="🤖 AI 주요 내용 요약", value=summary, inline=False)
+                embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({full_url})", inline=False)
+                if image_url:
+                    embed.set_image(url=image_url)
+
+                await channel.send(embed=embed)
+                
+                last_article_id = current_article_id
             else:
-                embed.add_field(name="📝 공지 내용", value=clean_html(content)[:500] + "...", inline=False)
-
-            embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({detail_url})", inline=False)
-
-            if img_url:
-                embed.set_image(url=img_url)
-
-            # 메세지 전송
-            if target_channel:
-                await target_channel.send(embed=embed)
-            elif CHANNEL_ID:
-                channel = bot.get_channel(CHANNEL_ID)
-                if channel:
-                    await channel.send(embed=embed)
-
-            if not force_send:
-                last_article_id = current_id
-                print(f"[INFO] 새 공지사항 알림 전송 완료! (ID: {last_article_id})", flush=True)
+                await browser.close()
 
     except Exception as e:
-        print(f"[ERROR] 크롤링 중 오류 발생: {e}", flush=True)
-
-@tasks.loop(minutes=5)
-async def check_updates():
-    await fetch_and_notify()
+        print(f"[ERROR] 자동 감지 크롤링 중 오류 발생: {e}", flush=True)
 
 @check_updates.before_loop
 async def before_check_updates():
