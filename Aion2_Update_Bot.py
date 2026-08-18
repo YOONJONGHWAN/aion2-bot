@@ -16,7 +16,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 NOTICE_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
-DETAIL_TIMEOUT = 10000
+DETAIL_TIMEOUT = 15000
 posted_notice_ids = set()
 
 app = Flask(__name__)
@@ -35,9 +35,8 @@ async def fetch_article_images(page, url):
     image_urls = []
     try:
         await page.goto(url, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
         
-        # 본문 내 이미지 수집 (배너, 로고 등 제외)
         img_elements = await page.query_selector_all("article img, .board_view img, div[class*='content'] img, body img")
         for img in img_elements:
             src = await img.get_attribute("src")
@@ -89,7 +88,6 @@ async def generate_ai_summary_from_images(title, image_urls):
 async def get_notice_targets(page):
     targets = []
     try:
-        # 게시판 목록에서 링크가 포함된 모든 a 태그 수집
         elements = await page.query_selector_all("a")
         seen_urls = set()
         
@@ -100,11 +98,9 @@ async def get_notice_targets(page):
             if not href:
                 continue
                 
-            # articleId가 포함된 유효한 공지 링크만 추출
             if 'articleId=' in href:
                 full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
                 
-                # 중복 제거 및 깔끔한 URL 정돈
                 if full_url in seen_urls:
                     continue
                 seen_urls.add(full_url)
@@ -123,12 +119,22 @@ async def init_posted_notices():
     logging.info("부팅 시 공지사항 목록 확인 중...")
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
-            page = await browser.new_page()
+            browser = await p.chromium.launch(
+                headless=True, 
+                args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+            )
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080}
+            )
+            page = await context.new_page()
             
             await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
-            await page.wait_for_selector("a", timeout=10000)
-            await page.wait_for_timeout(3000)
+            try:
+                await page.wait_for_selector("a", timeout=15000)
+            except:
+                pass
+            await page.wait_for_timeout(4000)
             
             targets = await get_notice_targets(page)
             for t in targets:
@@ -142,13 +148,22 @@ async def init_posted_notices():
 async def scrape_and_process_notices(is_test=False):
     new_notices = []
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        browser = await p.chromium.launch(
+            headless=True, 
+            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+        )
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080}
+        )
         page = await context.new_page()
         try:
             await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
-            await page.wait_for_selector("a", timeout=10000)
-            await page.wait_for_timeout(3000)
+            try:
+                await page.wait_for_selector("a", timeout=15000)
+            except:
+                pass
+            await page.wait_for_timeout(4000)
             
             targets = await get_notice_targets(page)
             valid_targets = []
@@ -158,7 +173,7 @@ async def scrape_and_process_notices(is_test=False):
                     continue
                 valid_targets.append(target)
                 if is_test:
-                    break # 테스트일 때는 최신 1개만
+                    break
 
             for target in valid_targets:
                 try:
