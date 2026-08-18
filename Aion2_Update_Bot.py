@@ -33,9 +33,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 목표 웹사이트 URL
+# 목표 웹사이트 URL (사용자 지정 주소 유지)
 TARGET_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
-DETAIL_TIMEOUT = 60000  # 타임아웃 60초로 연장
+DETAIL_TIMEOUT = 60000  # 타임아웃 60초
 
 # 전역 상태 변수
 known_notices = set()
@@ -130,7 +130,6 @@ async def check_new_notices(is_initial=False):
             timezone_id="Asia/Seoul"
         )
         
-        # 봇 탐지 우회 속성 주입
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = await context.new_page()
         
@@ -139,14 +138,7 @@ async def check_new_notices(is_initial=False):
             await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
             await page.wait_for_timeout(7000)
             
-            page_title = await page.title()
-            logging.info(f"현재 페이지 타이틀: {page_title}")
-            
-            content_snippet = await page.content()
-            logging.info(f"페이지 HTML 일부: {content_snippet[:300]}...")
-
             articles = await page.query_selector_all("a.title")
-            logging.info(f"페이지 내 발견된 공지 제목 링크 개수: {len(articles)}")
             
             current_notices = []
             for article in articles:
@@ -208,6 +200,7 @@ async def auto_notice_loop():
     except Exception as e:
         logging.error(f"자동 감지 루프 중 에러: {e}")
 
+# 실제 크롤링 및 AI 분석을 수행하는 !확인 명령어
 @bot.command(name="확인")
 async def manual_check(ctx):
     await ctx.send("🔍 최신 공지사항을 확인하고 AI가 분석 중입니다... 잠시만 기다려주세요!")
@@ -215,7 +208,21 @@ async def manual_check(ctx):
         new_notices = await check_new_notices(is_initial=False)
         if not new_notices:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+                browser_executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+                launch_kwargs = {
+                    "headless": True, 
+                    "args": [
+                        "--no-sandbox", 
+                        "--disable-setuid-sandbox", 
+                        "--disable-dev-shm-usage", 
+                        "--disable-gpu",
+                        "--disable-blink-features=AutomationControlled"
+                    ]
+                }
+                if browser_executable_path:
+                    launch_kwargs["executable_path"] = browser_executable_path
+                
+                browser = await p.chromium.launch(**launch_kwargs)
                 page = await browser.new_page()
                 await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
                 await page.wait_for_timeout(3000)
@@ -252,13 +259,16 @@ async def manual_check(ctx):
     except Exception as e:
         await ctx.send(f"확인 중 오류가 발생했습니다: {e}")
 
+# 실제 공지 알림과 동일한 상세 뷰 링크 구조를 보여주도록 수정된 !테스트알림 명령어
 @bot.command(name="테스트알림")
 async def test_notification(ctx):
     await ctx.send("🔍 테스트 알림 시뮬레이션을 시작합니다...")
     try:
         sample_summary = "이것은 아이온2 업데이트 봇의 기능 테스트 메시지입니다. AI 요약 및 이미지 연동 시스템이 정상적으로 작동하고 있습니다."
+        sample_view_link = "https://aion2.plaync.com/ko-kr/board/cm_story/view?articleId=sample12345"
+        
         embed = discord.Embed(title="🧪 [테스트] 아이온2 공지 요약", description=sample_summary, color=discord.Color.orange())
-        embed.add_field(name="테스트 링크", value=TARGET_URL, inline=False)
+        embed.add_field(name="원문 링크", value=sample_view_link, inline=False)
         await ctx.send(embed=embed)
     except Exception as e:
         await ctx.send(f"테스트 중 오류가 발생했습니다: {e}")
