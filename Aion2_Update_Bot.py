@@ -34,7 +34,7 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --------------------------------------------------
-# 3. 크롤링 및 AI 요약 공통 함수
+# 3. 크롤링 및 세분화 AI 요약 함수
 # --------------------------------------------------
 def clean_html(raw_html):
     if not raw_html:
@@ -105,7 +105,7 @@ async def summarize_with_gemini(title, content):
     if len(text_to_summarize) < 30:
         text_to_summarize = f"제목: {title}"
 
-    # 📌 세분화 및 상세 요약을 위한 프롬프트 수정
+    # 📌 세분화 및 상세 요약을 위한 개선된 프롬프트
     prompt = (
         "너는 아이온2 디스코드 알림 봇이야. 아래 게임 공지사항을 읽고 유저들이 한눈에 파악할 수 있도록 구체적이고 상세하게 정리해줘.\n\n"
         "아래 [출력 양식]을 바탕으로 작성하되, 해당 내용이 공지에 없는 항목은 생략해줘.\n\n"
@@ -189,11 +189,22 @@ async def check_command(ctx):
         
     await ctx.send(embed=embed)
 
+@bot.command(name="테스트알림")
+async def test_notification_command(ctx):
+    """새 공지가 등록된 상황을 강제로 연출하여 자동 알림 시스템 전체를 검증합니다."""
+    global last_article_id
+    await ctx.send("🧪 **[자동 알림 시스템 검증]** 최신 공지를 새 글인 것처럼 감지하여 자동 알림을 테스트합니다...")
+    
+    # 강제로 이전 ID 기준을 가짜 값으로 변경
+    last_article_id = "test_dummy_id"
+    
+    # 5분 주기 크롤링 실행 로직 호출
+    await do_check_updates()
+
 # --------------------------------------------------
 # 5. 5분 주기 크롤링 및 새 글 자동 감지 로직
 # --------------------------------------------------
-@tasks.loop(minutes=5)
-async def check_updates():
+async def do_check_updates():
     global last_article_id
     
     if not CHANNEL_ID:
@@ -216,7 +227,7 @@ async def check_updates():
             print(f"[INFO] 최초 기준 공지 ID 저장 완료: {last_article_id}", flush=True)
             return
 
-        # 새로운 공지가 추가되었을 때만 디스코드 채널로 전송
+        # 새로운 공지가 추가되었을 때 디스코드 채널로 자동 전송
         if article['id'] != last_article_id:
             print(f"[NEW] 새 공지사항 감지! (ID: {article['id']})", flush=True)
             
@@ -238,6 +249,10 @@ async def check_updates():
 
     except Exception as e:
         print(f"[ERROR] 자동 감지 크롤링 중 오류 발생: {e}", flush=True)
+
+@tasks.loop(minutes=5)
+async def check_updates():
+    await do_check_updates()
 
 @check_updates.before_loop
 async def before_check_updates():
