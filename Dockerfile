@@ -1,18 +1,23 @@
-# 1. 브라우저가 미리 설치된 환경을 가져옵니다.
-FROM mcr.microsoft.com/playwright/python:v1.62.0-noble
+# 1. 가장 안정적인 파이썬 공식 슬림 이미지 사용
+FROM python:3.11-slim
 
-# 2. 작업할 폴더를 설정합니다.
+# 2. 작업 디렉토리 설정
 WORKDIR /app
 
-# 3. 내 컴퓨터에 있는 requirements.txt를 이 세팅된 컴퓨터로 복사해서 라이브러리를 설치합니다.
+# 3. 시스템 필수 패키지 설치
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 4. 파이썬 라이브러리 설치
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 브라우저(크롬)를 설치합니다.
-RUN playwright install chromium
+# 5. Playwright 브라우저 및 시스템 의존성 완벽 설치 (도커 빌드 안이라 권한 문제 없음)
+RUN playwright install --with-deps chromium
 
-# 5. 내 파이썬 코드들을 전부 이 컴퓨터로 복사합니다.
+# 6. 소스 코드 복사
 COPY . .
 
-# 6. 마지막으로 내 봇을 실행합니다.
+# 7. 봇 실행
 CMD ["python", "Aion2_Update_Bot.py"]
