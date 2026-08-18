@@ -98,18 +98,23 @@ async def init_posted_notices():
             page = await browser.new_page()
             
             await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000)
+            
+            # [핵심 수정] 게시판 목록이 화면에 렌더링될 때까지 최대 10초 대기
+            try:
+                await page.wait_for_selector("a", timeout=10000)
+            except:
+                pass
+            await page.wait_for_timeout(3000) # 추가 안정화 대기
             
             elements = await page.query_selector_all("a")
             logging.info(f"발견된 전체 링크 개수: {len(elements)}")
             
             for elem in elements:
                 href = await elem.get_attribute("href")
-                if href:
-                    # articleId가 포함된 링크를 유효한 공지로 인식
-                    if 'articleId=' in href or 'view' in href or 'detail' in href:
-                        full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                        posted_notice_ids.add(full_url) # 전체 URL을 고유 ID로 사용
+                if href and 'cm_story' in href and ('articleId=' in href or 'detail' in href or 'view' in href):
+                    full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
+                    clean_url = full_url.split("?")[0] + ("?" + full_url.split("?")[1] if "?" in full_url else "")
+                    posted_notice_ids.add(clean_url)
                         
             await browser.close()
             logging.info(f"동기화 완료: 총 {len(posted_notice_ids)}개의 유효 공지 확인됨")
@@ -124,6 +129,12 @@ async def scrape_and_process_notices(is_test=False):
         page = await context.new_page()
         try:
             await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
+            
+            # [핵심 수정] 렌더링 완료 대기
+            try:
+                await page.wait_for_selector("a", timeout=10000)
+            except:
+                pass
             await page.wait_for_timeout(3000)
             
             elements = await page.query_selector_all("a")
@@ -134,19 +145,17 @@ async def scrape_and_process_notices(is_test=False):
                 href = await elem.get_attribute("href")
                 title = (await elem.inner_text()).strip()
                 
-                if not href or not title or len(title) < 2:
-                    continue
-                
-                if 'articleId=' in href or 'view' in href or 'detail' in href:
-                    full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                    notice_id = full_url # 전체 URL을 고유 ID로 사용
-                    
-                    if notice_id in seen_urls: 
+                if href and 'cm_story' in href and ('articleId=' in href or 'detail' in href or 'view' in href):
+                    if not title or len(title) < 5:
                         continue
+                    
+                    full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
+                    notice_id = full_url.split("?")[0] + ("?" + full_url.split("?")[1] if "?" in full_url else "")
+                    
+                    if notice_id in seen_urls: continue
                     seen_urls.add(notice_id)
                     
-                    if notice_id in posted_notice_ids and not is_test: 
-                        continue
+                    if notice_id in posted_notice_ids and not is_test: continue
                     
                     targets.append({"id": notice_id, "title": title, "url": full_url})
                     if is_test and len(targets) >= 1: 
