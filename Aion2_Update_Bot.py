@@ -54,6 +54,19 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 # ============================================================
+# Discord Bot 설정
+# ============================================================
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents
+)
+
+
+# ============================================================
 # 3. Flask - Render Health Check
 # ============================================================
 
