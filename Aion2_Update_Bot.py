@@ -4,22 +4,11 @@ import sys
 import time
 import asyncio
 import threading
-import subprocess
 import discord
 from discord.ext import commands, tasks
 from flask import Flask
 from google import genai
 from playwright.async_api import async_playwright
-
-# --------------------------------------------------
-# 0. Playwright Chromium 자동 설치 체크
-# --------------------------------------------------
-try:
-    print("[INFO] Playwright Chromium 브라우저 설치 상태 확인 중...", flush=True)
-    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-    print("[INFO] Playwright Chromium 준비 완료!", flush=True)
-except Exception as e:
-    print(f"[WARN] Playwright 브라우저 자동 설치 중 문제 발생: {e}", flush=True)
 
 # --------------------------------------------------
 # 1. 환경 변수 및 구글 AI SDK 설정
@@ -29,9 +18,10 @@ CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip().strip('"').strip("'")
 
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+BOARD_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
 
 # --------------------------------------------------
-# 2. Render 24시간 작동용 Flask 웹 서버 설정
+# 2. Render 24시간 작동용 Flask 웹 서버
 # --------------------------------------------------
 app = Flask(__name__)
 
@@ -44,7 +34,7 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 # --------------------------------------------------
-# 3. 유틸리티 함수 (HTML 태그 제거 및 상세 AI 요약)
+# 3. 크롤링 및 AI 요약 공통 함수
 # --------------------------------------------------
 def clean_html(raw_html):
     if not raw_html:
@@ -52,6 +42,58 @@ def clean_html(raw_html):
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
     return cleantext.strip()
+
+async def fetch_latest_article():
+    """실제 아이온2 홈페이지에서 최신 공지사항 1건을 크롤링해 오는 함수"""
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            
+            await page.goto(BOARD_URL, timeout=30000)
+            await page.wait_for_selector("a[href*='articleId=']", timeout=15000)
+
+            articles = await page.query_selector_all("a[href*='articleId=']")
+            if not articles:
+                await browser.close()
+                return None
+
+            first_article = articles[0]
+            href = await first_article.get_attribute("href")
+            
+            match = re.search(r'articleId=([a-zA-Z0-9]+)', href)
+            if not match:
+                await browser.close()
+                return None
+
+            article_id = match.group(1)
+            full_url = f"https://aion2.plaync.com{href}" if href.startswith('/') else href
+
+            # 상세 페이지 접속
+            await page.goto(full_url, timeout=30000)
+            await asyncio.sleep(2)
+
+            title_el = await page.query_selector("h1, .title, .board-title")
+            title = await title_el.inner_text() if title_el else "아이온2 신규 공지사항"
+
+            content_el = await page.query_selector(".contents, .board-contents, .article-body")
+            content = await content_el.inner_text() if content_el else ""
+
+            img_el = await page.query_selector(".contents img, .board-contents img, .article-body img")
+            image_url = await img_el.get_attribute("src") if img_el else None
+
+            await browser.close()
+            
+            return {
+                "id": article_id,
+                "url": full_url,
+                "title": title.strip(),
+                "content": content.strip(),
+                "image_url": image_url
+            }
+    except Exception as e:
+        print(f"[ERROR] 크롤링 실패: {e}", flush=True)
+        return None
 
 async def summarize_with_gemini(title, content):
     if not GEMINI_API_KEY or not client:
@@ -63,12 +105,22 @@ async def summarize_with_gemini(title, content):
     if len(text_to_summarize) < 30:
         text_to_summarize = f"제목: {title}"
 
+    # 📌 세분화 및 상세 요약을 위한 프롬프트 수정
     prompt = (
-        "너는 아이온2 디스코드 알림 봇이야. 아래 게임 공지사항/게시글을 읽고 유저들이 꼭 알아야 할 중요한 내용을 알차게 정리해줘.\n"
-        "조건:\n"
-        "1. 줄 수에 구애받지 말고, 주요 점검 시간, 핵심 변경사항, 신규 이벤트, 보상, 주의사항 등 중요한 정보가 빠짐없이 포함되도록 작성할 것\n"
-        "2. 유저들이 읽기 쉽게 각 항목은 '- '로 시작하여 가독성 높게 정리할 것\n"
-        "3. 군더더기 서론이나 인사말 없이 핵심 요약 내용만 출력할 것\n\n"
+        "너는 아이온2 디스코드 알림 봇이야. 아래 게임 공지사항을 읽고 유저들이 한눈에 파악할 수 있도록 구체적이고 상세하게 정리해줘.\n\n"
+        "아래 [출력 양식]을 바탕으로 작성하되, 해당 내용이 공지에 없는 항목은 생략해줘.\n\n"
+        "[출력 양식]\n"
+        "📌 **주요 업데이트 및 점검 내용**\n"
+        "- (점검 시간, 신규 콘텐츠, 핵심 변경사항 등)\n\n"
+        "🛠 **추가 및 개선 사항**\n"
+        "- (시스템 변경, 밸런스 패치, 오류 수정 등)\n\n"
+        "🎁 **보상 및 이벤트 정보**\n"
+        "- (점검 보상, 진행되는 이벤트, 수령 방법 등)\n\n"
+        "⚠️ **주의 및 안내 사항**\n"
+        "- (유저 주의사항, 사전 데이터 보호 조치 등)\n\n"
+        "작성 조건:\n"
+        "1. 단어만 늘어놓지 말고 구체적인 시간, 아이템 이름, 수량, 핵심 수치 등을 명확히 기재할 것.\n"
+        "2. 군더더기 서론/결론, 인사말 없이 지정된 양식 항목만 간결하고 명확하게 출력할 것.\n\n"
         f"[제목]: {title}\n"
         f"[내용]: {text_to_summarize[:2500]}"
     )
@@ -106,7 +158,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 last_article_id = None
-BOARD_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
 
 @bot.event
 async def on_ready():
@@ -116,30 +167,25 @@ async def on_ready():
 
 @bot.command(name="확인")
 async def check_command(ctx):
-    await ctx.send("공지사항을 확인하고 요약을 생성하는 중입니다...")
+    await ctx.send("🔍 홈페이지에서 최신 공지사항을 직접 확인하는 중입니다...")
     
-    test_title = "아이온2 정기 점검 및 업데이트 안내"
-    test_content = (
-        "신규 던전 '파멸의 신전'이 추가되며 클래스 밸런스 패치가 진행됩니다. "
-        "서버 점검 시간은 오전 6시부터 10시까지 총 4시간 동안 진행되며, "
-        "점검 보상으로 신성한 수호석 10개와 경험치 부스터가 지급됩니다."
-    )
-    test_url = BOARD_URL
-    test_image_url = "https://f2.plaync.com/aion2/v2/og_image.png"
+    article = await fetch_latest_article()
+    if not article:
+        await ctx.send("❌ 공지사항을 불러오는 데 실패했습니다. 잠시 후 다시 시도해 주세요.")
+        return
 
-    summary = await summarize_with_gemini(test_title, test_content)
+    summary = await summarize_with_gemini(article['title'], article['content'])
     
-    embed = discord.Embed(title=f"📢 {test_title}", url=test_url, color=0x00ff00)
+    embed = discord.Embed(title=f"📢 {article['title']}", url=article['url'], color=0x00ff00)
     
     if summary:
         embed.add_field(name="🤖 AI 주요 내용 요약", value=summary, inline=False)
     else:
-        embed.add_field(name="📝 공지 내용", value=test_content, inline=False)
-        embed.set_footer(text="⚠️ AI 요약 생성 실패 (Render 로그를 확인해 주세요)")
+        embed.add_field(name="📝 공지 내용", value=clean_html(article['content'])[:500], inline=False)
     
-    embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({test_url})", inline=False)
-    if test_image_url:
-        embed.set_image(url=test_image_url)
+    embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({article['url']})", inline=False)
+    if article['image_url']:
+        embed.set_image(url=article['image_url'])
         
     await ctx.send(embed=embed)
 
@@ -160,70 +206,35 @@ async def check_updates():
         return
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+        article = await fetch_latest_article()
+        if not article:
+            return
+
+        # 최초 실행 시 현재 최신 공지를 기준점으로 기록
+        if last_article_id is None:
+            last_article_id = article['id']
+            print(f"[INFO] 최초 기준 공지 ID 저장 완료: {last_article_id}", flush=True)
+            return
+
+        # 새로운 공지가 추가되었을 때만 디스코드 채널로 전송
+        if article['id'] != last_article_id:
+            print(f"[NEW] 새 공지사항 감지! (ID: {article['id']})", flush=True)
             
-            await page.goto(BOARD_URL, timeout=30000)
-            await page.wait_for_selector("a[href*='articleId=']", timeout=15000)
+            summary = await summarize_with_gemini(article['title'], article['content'])
 
-            articles = await page.query_selector_all("a[href*='articleId=']")
-            if not articles:
-                await browser.close()
-                return
-
-            first_article = articles[0]
-            href = await first_article.get_attribute("href")
+            embed = discord.Embed(title=f"📢 {article['title']}", url=article['url'], color=0x00ff00)
             
-            match = re.search(r'articleId=([a-zA-Z0-9]+)', href)
-            if not match:
-                await browser.close()
-                return
-
-            current_article_id = match.group(1)
-            full_url = f"https://aion2.plaync.com{href}" if href.startswith('/') else href
-
-            if last_article_id is None:
-                last_article_id = current_article_id
-                print(f"[INFO] 최초 기준 공지 ID 저장: {last_article_id}", flush=True)
-                await browser.close()
-                return
-
-            if current_article_id != last_article_id:
-                print(f"[NEW] 새 공지사항 감지! (ID: {current_article_id})", flush=True)
-                
-                await page.goto(full_url, timeout=30000)
-                await asyncio.sleep(2)
-
-                title_el = await page.query_selector("h1, .title, .board-title")
-                title = await title_el.inner_text() if title_el else "아이온2 신규 공지사항"
-
-                content_el = await page.query_selector(".contents, .board-contents, .article-body")
-                content = await content_el.inner_text() if content_el else ""
-
-                img_el = await page.query_selector(".contents img, .board-contents img, .article-body img")
-                image_url = await img_el.get_attribute("src") if img_el else None
-
-                await browser.close()
-
-                summary = await summarize_with_gemini(title, content)
-
-                embed = discord.Embed(title=f"📢 {title.strip()}", url=full_url, color=0x00ff00)
-                
-                if summary:
-                    embed.add_field(name="🤖 AI 주요 내용 요약", value=summary, inline=False)
-                else:
-                    embed.add_field(name="📝 공지 내용", value=clean_html(content)[:500], inline=False)
-
-                embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({full_url})", inline=False)
-                if image_url:
-                    embed.set_image(url=image_url)
-
-                await channel.send(embed=embed)
-                
-                last_article_id = current_article_id
+            if summary:
+                embed.add_field(name="🤖 AI 주요 내용 요약", value=summary, inline=False)
             else:
-                await browser.close()
+                embed.add_field(name="📝 공지 내용", value=clean_html(article['content'])[:500], inline=False)
+
+            embed.add_field(name="🔗 공지 바로가기", value=f"[공지사항 전체보기]({article['url']})", inline=False)
+            if article['image_url']:
+                embed.set_image(url=article['image_url'])
+
+            await channel.send(embed=embed)
+            last_article_id = article['id']
 
     except Exception as e:
         print(f"[ERROR] 자동 감지 크롤링 중 오류 발생: {e}", flush=True)
