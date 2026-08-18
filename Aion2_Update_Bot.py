@@ -4,11 +4,22 @@ import sys
 import time
 import asyncio
 import threading
+import subprocess
 import discord
 from discord.ext import commands, tasks
 from flask import Flask
 from google import genai
 from playwright.async_api import async_playwright
+
+# --------------------------------------------------
+# 0. Playwright Chromium 브라우저 자동 설치 보장
+# --------------------------------------------------
+try:
+    print("[INFO] Playwright Chromium 브라우저 설치 상태 확인 및 자동 다운로드 중...", flush=True)
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    print("[INFO] Playwright Chromium 준비 완료!", flush=True)
+except Exception as e:
+    print(f"[WARN] Playwright 자동 설치 체크 중 알림: {e}", flush=True)
 
 # --------------------------------------------------
 # 1. 환경 변수 및 구글 AI SDK 설정
@@ -69,7 +80,6 @@ async def fetch_latest_article():
             article_id = match.group(1)
             full_url = f"https://aion2.plaync.com{href}" if href.startswith('/') else href
 
-            # 상세 페이지 접속
             await page.goto(full_url, timeout=30000)
             await asyncio.sleep(2)
 
@@ -105,7 +115,6 @@ async def summarize_with_gemini(title, content):
     if len(text_to_summarize) < 30:
         text_to_summarize = f"제목: {title}"
 
-    # 📌 세분화 및 상세 요약을 위한 개선된 프롬프트
     prompt = (
         "너는 아이온2 디스코드 알림 봇이야. 아래 게임 공지사항을 읽고 유저들이 한눈에 파악할 수 있도록 구체적이고 상세하게 정리해줘.\n\n"
         "아래 [출력 양식]을 바탕으로 작성하되, 해당 내용이 공지에 없는 항목은 생략해줘.\n\n"
@@ -191,14 +200,9 @@ async def check_command(ctx):
 
 @bot.command(name="테스트알림")
 async def test_notification_command(ctx):
-    """새 공지가 등록된 상황을 강제로 연출하여 자동 알림 시스템 전체를 검증합니다."""
     global last_article_id
     await ctx.send("🧪 **[자동 알림 시스템 검증]** 최신 공지를 새 글인 것처럼 감지하여 자동 알림을 테스트합니다...")
-    
-    # 강제로 이전 ID 기준을 가짜 값으로 변경
     last_article_id = "test_dummy_id"
-    
-    # 5분 주기 크롤링 실행 로직 호출
     await do_check_updates()
 
 # --------------------------------------------------
@@ -221,13 +225,11 @@ async def do_check_updates():
         if not article:
             return
 
-        # 최초 실행 시 현재 최신 공지를 기준점으로 기록
         if last_article_id is None:
             last_article_id = article['id']
             print(f"[INFO] 최초 기준 공지 ID 저장 완료: {last_article_id}", flush=True)
             return
 
-        # 새로운 공지가 추가되었을 때 디스코드 채널로 자동 전송
         if article['id'] != last_article_id:
             print(f"[NEW] 새 공지사항 감지! (ID: {article['id']})", flush=True)
             
