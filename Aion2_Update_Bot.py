@@ -10,18 +10,15 @@ from playwright.async_api import async_playwright
 from google import genai
 from google.genai import types
 
-# 로깅 설정
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# 환경 변수
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 NOTICE_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
-DETAIL_TIMEOUT = 8000
+DETAIL_TIMEOUT = 10000
 posted_notice_ids = set()
 
-# 웹 서버 (Render 헬스체크용)
 app = Flask(__name__)
 @app.route('/')
 def home():
@@ -30,21 +27,17 @@ def home():
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
-# 봇 설정
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-async def fetch_article_detail_and_images(page, url):
-    text_content = ""
+async def fetch_article_images(page, url):
     image_urls = []
     try:
         await page.goto(url, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
-        await page.wait_for_timeout(1500)
-        body = await page.query_selector("body")
-        if body:
-            text_content = (await body.inner_text()).strip()
+        await page.wait_for_timeout(2000)
         
+        # 본문 내 이미지 수집 (배너, 로고 등 제외)
         img_elements = await page.query_selector_all("article img, .board_view img, div[class*='content'] img, body img")
         for img in img_elements:
             src = await img.get_attribute("src")
@@ -53,32 +46,35 @@ async def fetch_article_detail_and_images(page, url):
                     src = "https:" + src
                 elif src.startswith("/"):
                     src = "https://aion2.plaync.com" + src
-                if "http" in src and not any(x in src.lower() for x in ["logo", "icon", "avatar"]):
-                    image_urls.append(src)
+                
+                if "http" in src and not any(x in src.lower() for x in ["logo", "icon", "avatar", "banner", "profile"]):
+                    if src not in image_urls:
+                        image_urls.append(src)
     except Exception as e:
-        logging.warning(f"상세 수집 실패: {e}")
-    return text_content, image_urls
+        logging.warning(f"이미지 수집 실패: {e}")
+    return image_urls
 
-async def generate_ai_summary(title, content, image_urls):
-    if not GEMINI_API_KEY:
-        return None
-    client = genai.Client(api_key=GEMINI_API_KEY)
+async def generate_ai_summary_from_images(title, image_urls):
+    if not GEMINI_API_KEY or not image_urls:
+        return f"새로운 공지사항이 등록되었습니다. (이미지 형태의 공지)"
     
-    prompt = f"게임 '아이온2' 공지사항입니다. 제목과 본문을 분석하여 사용자가 핵심 내용을 빠르게 이해할 수 있도록 명확하게 정리해 주세요.\n\n제목: {title}\n"
-    contents = [prompt]
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    contents = [
+        f"게임 '아이온2'의 공식 공지사항 이미지입니다. 제목: {title}\n첨부된 이미지들을 분석하여 유저가 알아야 할 핵심 내용, 업데이트 사항, 이벤트 내용을 명확하고 보기 쉽게 요약해 주세요."
+    ]
 
-    if len(content) >= 30:
-        contents.append(f"본문:\n{content[:2500]}")
-    elif image_urls:
-        try:
-            async with httpx.AsyncClient() as http_client:
-                resp = await http_client.get(image_urls[0], timeout=10.0)
+    async with httpx.AsyncClient() as http_client:
+        for img_url in image_urls[:3]:
+            try:
+                resp = await http_client.get(img_url, timeout=10.0)
                 if resp.status_code == 200:
-                    image_part = types.Part.from_bytes(data=resp.content, mime_type=resp.headers.get("content-type", "image/jpeg").split(";")[0])
+                    mime_type = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+                    if mime_type not in ["image/jpeg", "image/png", "image/webp"]:
+                        mime_type = "image/jpeg"
+                    image_part = types.Part.from_bytes(data=resp.content, mime_type=mime_type)
                     contents.append(image_part)
-                    contents.append("이 이미지는 공지사항의 본문입니다. 내용을 분석하여 핵심 내용을 요약해 주세요.")
-        except:
-            pass
+            except Exception as e:
+                logging.warning(f"이미지 다운로드 실패 ({img_url}): {e}")
 
     for model in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]:
         try:
@@ -87,7 +83,40 @@ async def generate_ai_summary(title, content, image_urls):
                 return response.text.strip()
         except:
             continue
-    return None
+            
+    return "공지 이미지를 요약하는 과정에서 문제가 발생했습니다. 링크를 확인해 주세요."
+
+async def get_notice_targets(page):
+    targets = []
+    try:
+        # 게시판 목록에서 링크가 포함된 모든 a 태그 수집
+        elements = await page.query_selector_all("a")
+        seen_urls = set()
+        
+        for elem in elements:
+            href = await elem.get_attribute("href")
+            title = (await elem.inner_text()).strip()
+            
+            if not href:
+                continue
+                
+            # articleId가 포함된 유효한 공지 링크만 추출
+            if 'articleId=' in href:
+                full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
+                
+                # 중복 제거 및 깔끔한 URL 정돈
+                if full_url in seen_urls:
+                    continue
+                seen_urls.add(full_url)
+                
+                if not title or len(title) < 2:
+                    title = "아이온2 업데이트 공지"
+                    
+                targets.append({"id": full_url, "title": title, "url": full_url})
+    except Exception as e:
+        logging.error(f"공지 타겟 추출 중 오류: {e}")
+        
+    return targets
 
 async def init_posted_notices():
     global posted_notice_ids
@@ -98,23 +127,12 @@ async def init_posted_notices():
             page = await browser.new_page()
             
             await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
+            await page.wait_for_selector("a", timeout=10000)
+            await page.wait_for_timeout(3000)
             
-            # [핵심 수정] 게시판 목록이 화면에 렌더링될 때까지 최대 10초 대기
-            try:
-                await page.wait_for_selector("a", timeout=10000)
-            except:
-                pass
-            await page.wait_for_timeout(3000) # 추가 안정화 대기
-            
-            elements = await page.query_selector_all("a")
-            logging.info(f"발견된 전체 링크 개수: {len(elements)}")
-            
-            for elem in elements:
-                href = await elem.get_attribute("href")
-                if href and 'cm_story' in href and ('articleId=' in href or 'detail' in href or 'view' in href):
-                    full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                    clean_url = full_url.split("?")[0] + ("?" + full_url.split("?")[1] if "?" in full_url else "")
-                    posted_notice_ids.add(clean_url)
+            targets = await get_notice_targets(page)
+            for t in targets:
+                posted_notice_ids.add(t['id'])
                         
             await browser.close()
             logging.info(f"동기화 완료: 총 {len(posted_notice_ids)}개의 유효 공지 확인됨")
@@ -129,45 +147,26 @@ async def scrape_and_process_notices(is_test=False):
         page = await context.new_page()
         try:
             await page.goto(NOTICE_URL, timeout=30000, wait_until="domcontentloaded")
-            
-            # [핵심 수정] 렌더링 완료 대기
-            try:
-                await page.wait_for_selector("a", timeout=10000)
-            except:
-                pass
+            await page.wait_for_selector("a", timeout=10000)
             await page.wait_for_timeout(3000)
             
-            elements = await page.query_selector_all("a")
-            targets = []
-            seen_urls = set()
+            targets = await get_notice_targets(page)
+            valid_targets = []
             
-            for elem in elements:
-                href = await elem.get_attribute("href")
-                title = (await elem.inner_text()).strip()
-                
-                if href and 'cm_story' in href and ('articleId=' in href or 'detail' in href or 'view' in href):
-                    if not title or len(title) < 5:
-                        continue
-                    
-                    full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                    notice_id = full_url.split("?")[0] + ("?" + full_url.split("?")[1] if "?" in full_url else "")
-                    
-                    if notice_id in seen_urls: continue
-                    seen_urls.add(notice_id)
-                    
-                    if notice_id in posted_notice_ids and not is_test: continue
-                    
-                    targets.append({"id": notice_id, "title": title, "url": full_url})
-                    if is_test and len(targets) >= 1: 
-                        break
-
             for target in targets:
+                if target['id'] in posted_notice_ids and not is_test:
+                    continue
+                valid_targets.append(target)
+                if is_test:
+                    break # 테스트일 때는 최신 1개만
+
+            for target in valid_targets:
                 try:
                     detail_page = await context.new_page()
-                    content, img_urls = await fetch_article_detail_and_images(detail_page, target['url'])
+                    img_urls = await fetch_article_images(detail_page, target['url'])
                     await detail_page.close()
                     
-                    summary = await generate_ai_summary(target['title'], content, img_urls)
+                    summary = await generate_ai_summary_from_images(target['title'], img_urls)
                     
                     new_notices.append({
                         "title": target['title'], 
@@ -192,14 +191,14 @@ def create_notice_embed(notice):
         color=discord.Color.blue()
     )
     if notice['summary']:
-        embed.add_field(name="📝 AI 핵심 요약", value=notice['summary'], inline=False)
+        embed.add_field(name="📝 이미지 공지 AI 핵심 요약", value=notice['summary'], inline=False)
     else:
         embed.add_field(name="📝 안내", value="상세 내용은 링크를 확인해 주세요.", inline=False)
         
     if notice['image']:
         embed.set_image(url=notice['image'])
         
-    embed.set_footer(text="Aion2 Update Bot • 자동 감지 시스템")
+    embed.set_footer(text="Aion2 Update Bot • 이미지 자동 분석 시스템")
     return embed
 
 @bot.event
@@ -228,12 +227,12 @@ async def auto_check_loop():
 
 @bot.command(name="확인", aliases=["테스트알림"])
 async def test_notification(ctx):
-    await ctx.send("🔍 최신 공지사항을 확인하고 요약을 진행 중입니다...")
+    await ctx.send("🔍 이미지 공지사항을 다운로드하여 AI가 분석 중입니다... 잠시만 기다려주세요!")
     try:
         notices = await scrape_and_process_notices(is_test=True)
         if notices:
             embed = create_notice_embed(notices[0])
-            await ctx.send(content="✅ **최신 공지 테스트 결과:**", embed=embed)
+            await ctx.send(content="✅ **최신 공지 이미지 분석 결과:**", embed=embed)
         else:
             await ctx.send("❌ 공지사항을 가져오지 못했거나 새 공지가 없습니다.")
     except Exception as e:
