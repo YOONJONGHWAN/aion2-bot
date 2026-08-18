@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import glob
 from flask import Flask
 from threading import Thread
 import discord
@@ -42,7 +43,14 @@ known_notices = set()
 
 # 렌더 환경 브라우저 실행 경로 에러 방지용 안전 래퍼 함수
 async def launch_browser(p):
-    browser_executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+    # Dockerfile에서 설정한 경로
+    custom_path = "/app/ms-playwright"
+    
+    # 1. 해당 경로 내에서 실제 크롬 실행 파일 찾기 (버전이 바뀌어도 찾을 수 있게 glob 사용)
+    # 크롬 실행 파일은 보통 'chrome-linux/chrome' 또는 'chrome-linux64/chrome' 형태입니다.
+    search_pattern = f"{custom_path}/*/chrome-linux*/chrome"
+    found_executables = glob.glob(search_pattern)
+    
     args = [
         "--no-sandbox", 
         "--disable-setuid-sandbox", 
@@ -52,13 +60,14 @@ async def launch_browser(p):
         "--window-size=1920,1080"
     ]
     
-    if browser_executable_path and os.path.exists(browser_executable_path):
-        try:
-            return await p.chromium.launch(headless=True, executable_path=browser_executable_path, args=args)
-        except Exception as e:
-            logging.warning(f"지정된 브라우저 경로 실행 실패, 기본 경로로 시도합니다: {e}")
-            
-    return await p.chromium.launch(headless=True, args=args)
+    if found_executables:
+        # 찾았으면 그 경로를 사용
+        logging.info(f"성공! 크롬 실행파일을 찾았습니다: {found_executables[0]}")
+        return await p.chromium.launch(headless=True, executable_path=found_executables[0], args=args)
+    else:
+        # 못 찾았으면 일단 시스템 기본 경로로 시도
+        logging.warning("지정한 경로에서 크롬을 못 찾았습니다. 기본 경로로 시도합니다.")
+        return await p.chromium.launch(headless=True, args=args)
 
 async def fetch_article_images(page, url):
     image_urls = []
