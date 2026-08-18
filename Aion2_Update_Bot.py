@@ -116,8 +116,16 @@ async def check_new_notices(is_initial=False):
         page = await browser.new_page()
         
         try:
-            await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
-            await page.wait_for_timeout(5000)
+            # 💡 SPA 페이지 특성에 맞게 networkidle(네트워크 요청이 안정화될 때까지)로 변경
+            await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="networkidle")
+            
+            # 게시글 링크가 화면에 나타날 때까지 최대 10초 대기
+            try:
+                await page.wait_for_selector("a[href*='cm_story_view']", timeout=10000)
+            except Exception:
+                pass
+                
+            await page.wait_for_timeout(2000) # 추가 렌더링 안정화 대기
             
             # 공지사항 목록 링크 수집 로직
             articles = await page.query_selector_all("a")
