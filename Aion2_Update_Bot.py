@@ -40,6 +40,26 @@ DETAIL_TIMEOUT = 60000  # 타임아웃 60초
 # 전역 상태 변수
 known_notices = set()
 
+# 렌더 환경 브라우저 실행 경로 에러 방지용 안전 래퍼 함수
+async def launch_browser(p):
+    browser_executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+    args = [
+        "--no-sandbox", 
+        "--disable-setuid-sandbox", 
+        "--disable-dev-shm-usage", 
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled",
+        "--window-size=1920,1080"
+    ]
+    
+    if browser_executable_path and os.path.exists(browser_executable_path):
+        try:
+            return await p.chromium.launch(headless=True, executable_path=browser_executable_path, args=args)
+        except Exception as e:
+            logging.warning(f"지정된 브라우저 경로 실행 실패, 기본 경로로 시도합니다: {e}")
+            
+    return await p.chromium.launch(headless=True, args=args)
+
 async def fetch_article_images(page, url):
     image_urls = []
     try:
@@ -107,22 +127,7 @@ async def check_new_notices(is_initial=False):
     new_notices_found = []
     
     async with async_playwright() as p:
-        browser_executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
-        launch_kwargs = {
-            "headless": True, 
-            "args": [
-                "--no-sandbox", 
-                "--disable-setuid-sandbox", 
-                "--disable-dev-shm-usage", 
-                "--disable-gpu",
-                "--disable-blink-features=AutomationControlled",
-                "--window-size=1920,1080"
-            ]
-        }
-        if browser_executable_path:
-            launch_kwargs["executable_path"] = browser_executable_path
-            
-        browser = await p.chromium.launch(**launch_kwargs)
+        browser = await launch_browser(p)
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080},
@@ -200,29 +205,23 @@ async def auto_notice_loop():
     except Exception as e:
         logging.error(f"자동 감지 루프 중 에러: {e}")
 
-# 실제 크롤링 및 AI 분석을 수행하는 !확인 명령어
+# 1. !확인: 새로운 공지가 없으면 가장 최신 공지를 실시간으로 가져와서 검증
 @bot.command(name="확인")
 async def manual_check(ctx):
     await ctx.send("🔍 최신 공지사항을 확인하고 AI가 분석 중입니다... 잠시만 기다려주세요!")
     try:
         new_notices = await check_new_notices(is_initial=False)
-        if not new_notices:
+        if new_notices:
+            for title, link, summary, image_urls in new_notices:
+                embed = discord.Embed(title=f"✅ {title}", description=summary, color=discord.Color.green())
+                embed.add_field(name="원문 링크", value=link, inline=False)
+                if image_urls:
+                    embed.set_image(url=image_urls[0])
+                await ctx.send(embed=embed)
+        else:
+            # 새로운 공지가 없을 경우, 실제 최신 공지글 중 하나를 샘플로 실제 링크와 함께 가져옴
             async with async_playwright() as p:
-                browser_executable_path = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
-                launch_kwargs = {
-                    "headless": True, 
-                    "args": [
-                        "--no-sandbox", 
-                        "--disable-setuid-sandbox", 
-                        "--disable-dev-shm-usage", 
-                        "--disable-gpu",
-                        "--disable-blink-features=AutomationControlled"
-                    ]
-                }
-                if browser_executable_path:
-                    launch_kwargs["executable_path"] = browser_executable_path
-                
-                browser = await p.chromium.launch(**launch_kwargs)
+                browser = await launch_browser(p)
                 page = await browser.new_page()
                 await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
                 await page.wait_for_timeout(3000)
@@ -241,35 +240,51 @@ async def manual_check(ctx):
                     summary = await generate_ai_summary_from_images(sample_title, image_urls)
                     await browser.close()
                     
-                    embed = discord.Embed(title="✅ 최신 공지 이미지 분석 결과:", description=summary, color=discord.Color.green())
+                    embed = discord.Embed(title=f"✅ [최신 샘플] {sample_title}", description=summary, color=discord.Color.green())
                     embed.add_field(name="원문 링크", value=sample_link, inline=False)
                     if image_urls:
                         embed.set_image(url=image_urls[0])
                     await ctx.send(embed=embed)
                     return
                 await browser.close()
-            await ctx.send("현재 새로운 감지된 공지가 없으며 샘플을 가져오지 못했습니다.")
-        else:
-            for title, link, summary, image_urls in new_notices:
-                embed = discord.Embed(title=f"✅ {title}", description=summary, color=discord.Color.green())
-                embed.add_field(name="원문 링크", value=link, inline=False)
-                if image_urls:
-                    embed.set_image(url=image_urls[0])
-                await ctx.send(embed=embed)
+            await ctx.send("현재 게시판에서 공지 링크를 가져오지 못했습니다.")
     except Exception as e:
         await ctx.send(f"확인 중 오류가 발생했습니다: {e}")
 
-# 실제 공지 알림과 동일한 상세 뷰 링크 구조를 보여주도록 수정된 !테스트알림 명령어
+# 2. !테스트알림: 가짜 주소가 아니라 실제 공지사항 목록에서 진짜 최신 링크를 긁어와서 테스트 수행
 @bot.command(name="테스트알림")
 async def test_notification(ctx):
-    await ctx.send("🔍 테스트 알림 시뮬레이션을 시작합니다...")
+    await ctx.send("🔍 실시간 공지 링크를 가져와 테스트 알림을 생성 중입니다...")
     try:
-        sample_summary = "이것은 아이온2 업데이트 봇의 기능 테스트 메시지입니다. AI 요약 및 이미지 연동 시스템이 정상적으로 작동하고 있습니다."
-        sample_view_link = "https://aion2.plaync.com/ko-kr/board/cm_story/view?articleId=sample12345"
+        async with async_playwright() as p:
+            browser = await launch_browser(p)
+            page = await browser.new_page()
+            await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3000)
+            articles = await page.query_selector_all("a.title")
+            sample_link, sample_title = "", "아이온2 테스트 공지"
+            for art in articles:
+                h = await art.get_attribute("href")
+                t = await art.inner_text()
+                if h and "cm_story/view" in h:
+                    sample_link = "https://aion2.plaync.com" + h if not h.startswith("http") else h
+                    sample_title = t.strip() or sample_title
+                    break
+            
+            if sample_link:
+                image_urls = await fetch_article_images(page, sample_link)
+                summary = await generate_ai_summary_from_images(sample_title, image_urls)
+                await browser.close()
+                
+                embed = discord.Embed(title=f"🧪 [테스트] {sample_title}", description=summary, color=discord.Color.orange())
+                embed.add_field(name="원문 링크", value=sample_link, inline=False)
+                if image_urls:
+                    embed.set_image(url=image_urls[0])
+                await ctx.send(embed=embed)
+                return
+            await browser.close()
         
-        embed = discord.Embed(title="🧪 [테스트] 아이온2 공지 요약", description=sample_summary, color=discord.Color.orange())
-        embed.add_field(name="원문 링크", value=sample_view_link, inline=False)
-        await ctx.send(embed=embed)
+        await ctx.send("테스트용 실제 공지 링크를 가져오지 못했습니다.")
     except Exception as e:
         await ctx.send(f"테스트 중 오류가 발생했습니다: {e}")
 
