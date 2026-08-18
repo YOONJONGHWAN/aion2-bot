@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TARGET_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
-NOTICE_URL = "https://aion2.plaync.com/ko-kr/board/notices/list"
+NOTICE_URL = "https://aion2.plaync.com/ko-kr/board/cm_story/list"
 DETAIL_TIMEOUT = 8000
 posted_notice_ids = set()
 
