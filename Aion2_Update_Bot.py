@@ -116,29 +116,27 @@ async def check_new_notices(is_initial=False):
         page = await browser.new_page()
         
         try:
-            # 💡 SPA 페이지 특성에 맞게 networkidle(네트워크 요청이 안정화될 때까지)로 변경
             await page.goto(TARGET_URL, timeout=DETAIL_TIMEOUT, wait_until="networkidle")
+            await page.wait_for_timeout(5000)
             
-            # 게시글 링크가 화면에 나타날 때까지 최대 10초 대기
-            try:
-                await page.wait_for_selector("a[href*='cm_story_view']", timeout=10000)
-            except Exception:
-                pass
-                
-            await page.wait_for_timeout(2000) # 추가 렌더링 안정화 대기
+            # 페이지 내의 모든 링크와 요소를 가져와서 어떤 주소 형태가 있는지 로그로 확인
+            all_links = await page.query_selector_all("a")
+            logging.info(f"페이지 내 발견된 총 링크(a 태그) 개수: {len(all_links)}")
             
-            # 공지사항 목록 링크 수집 로직
-            articles = await page.query_selector_all("a")
             current_notices = []
-            
-            for article in articles:
+            for article in all_links:
                 href = await article.get_attribute("href")
                 text = await article.inner_text()
-                if href and "/board/cm_story_view" in href:
-                    if not href.startswith("http"):
-                        href = "https://aion2.plaync.com" + href
-                    if text.strip() and href not in [n[1] for n in current_notices]:
-                        current_notices.append((text.strip(), href))
+                if href:
+                    # 디버깅을 위해 상위 몇 개의 링크를 로그에 찍어봄
+                    if len(current_notices) < 5:
+                        logging.info(f"[DEBUG HREQ] href: {href} | text: {text.strip()[:20]}py")
+                        
+                    if "/board/" in href or "view" in href: # 조건을 더 넓혀서 탐색
+                        if not href.startswith("http"):
+                            href = "https://aion2.plaync.com" + href
+                        if text.strip() and href not in [n[1] for n in current_notices]:
+                            current_notices.append((text.strip(), href))
             
             if is_initial:
                 for title, link in current_notices:
