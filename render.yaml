@@ -1,6 +1,12 @@
 services:
   - type: web
-    name: aion2-discord-bot
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python Aion2_Update_Bot.py
+    name: aion2-bot
+    runtime: docker # 이 부분이 중요합니다!
+    plan: free
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DISCORD_CHANNEL_ID
+        sync: false
