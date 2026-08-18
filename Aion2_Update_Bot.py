@@ -90,31 +90,33 @@ async def generate_ai_summary(title, content, image_urls):
     return None
 
 async def init_posted_notices():
-    """ 봇 부팅 시 기존 공지 ID를 미리 수집하여, 재시작 시 옛날 공지가 도배되는 현상 방지 """
+    """ 봇이 어떤 링크를 찾고 있는지 확인하는 디버깅용 동기화 함수 """
     global posted_notice_ids
-    logging.info("부팅 시 기존 공지 목록 동기화 중...")
+    logging.info("부팅 시 공지사항 목록 확인 중...")
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
             page = await browser.new_page()
             await page.goto(NOTICE_URL, timeout=20000)
+            await page.wait_for_timeout(5000) # 로딩 시간 5초로 늘림
             
-            # 자바스크립트가 완전히 렌더링될 수 있도록 3초 대기
-            await page.wait_for_timeout(3000)
-            
-            # 조금 더 포괄적으로 링크 요소를 수집 후 필터링
             elements = await page.query_selector_all("a")
+            logging.info(f"발견된 전체 링크 개수: {len(elements)}")
+            
             for elem in elements:
                 href = await elem.get_attribute("href")
-                if href and ('/board/' in href or 'notice' in href):
-                    if 'detail' in href or 'view' in href:
+                if href:
+                    # 모든 링크를 로그에 찍어보기 (나중에 문제 해결되면 이 줄은 지우셔도 됩니다)
+                    # logging.info(f"DEBUG: 발견된 링크 -> {href}") 
+                    
+                    if ('/board/' in href or 'notice' in href) and ('detail' in href or 'view' in href):
                         full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
                         posted_notice_ids.add(full_url.split("?")[0])
                         
             await browser.close()
-            logging.info(f"동기화 완료: 총 {len(posted_notice_ids)}개의 기존 공지 기억함")
+            logging.info(f"동기화 완료: 총 {len(posted_notice_ids)}개의 유효 공지 확인됨")
     except Exception as e:
-        logging.warning(f"기존 공지 동기화 중 예외 발생: {e}")
+        logging.warning(f"공지 확인 중 에러 발생: {e}")
 
 async def scrape_and_process_notices(is_test=False):
     new_notices = []
