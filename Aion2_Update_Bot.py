@@ -97,13 +97,20 @@ async def init_posted_notices():
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
             page = await browser.new_page()
-            await page.goto(NOTICE_URL, timeout=15000)
-            elements = await page.query_selector_all("a[href*='/board/notices/detail'], .board_list a")
+            await page.goto(NOTICE_URL, timeout=20000)
+            
+            # 자바스크립트가 완전히 렌더링될 수 있도록 3초 대기
+            await page.wait_for_timeout(3000)
+            
+            # 조금 더 포괄적으로 링크 요소를 수집 후 필터링
+            elements = await page.query_selector_all("a")
             for elem in elements:
                 href = await elem.get_attribute("href")
-                if href:
-                    full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                    posted_notice_ids.add(full_url.split("?")[0])
+                if href and ('/board/' in href or 'notice' in href):
+                    if 'detail' in href or 'view' in href:
+                        full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
+                        posted_notice_ids.add(full_url.split("?")[0])
+                        
             await browser.close()
             logging.info(f"동기화 완료: 총 {len(posted_notice_ids)}개의 기존 공지 기억함")
     except Exception as e:
@@ -113,28 +120,39 @@ async def scrape_and_process_notices(is_test=False):
     new_notices = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--no-sandbox'])
-        context = await browser.new_context(user_agent="Mozilla/5.0")
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         page = await context.new_page()
         try:
-            await page.goto(NOTICE_URL, timeout=15000)
-            elements = await page.query_selector_all("a[href*='/board/notices/detail'], .board_list a")
+            await page.goto(NOTICE_URL, timeout=20000)
+            await page.wait_for_timeout(3000) # 렌더링 대기
+            
+            elements = await page.query_selector_all("a")
             
             targets = []
+            seen_urls = set()
+            
             for elem in elements:
                 href = await elem.get_attribute("href")
                 title = (await elem.inner_text()).strip()
-                if not href or not title:
+                
+                if not href or not title or len(title) < 2:
                     continue
                 
-                full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
-                notice_id = full_url.split("?")[0]
-                
-                if notice_id in posted_notice_ids and not is_test:
-                    continue
-                
-                targets.append({"id": notice_id, "title": title, "url": full_url})
-                if is_test:
-                    break
+                # 공지 상세 페이지 링크 패턴 필터링
+                if ('/board/' in href or 'notice' in href) and ('detail' in href or 'view' in href):
+                    full_url = href if href.startswith("http") else f"https://aion2.plaync.com{href}"
+                    notice_id = full_url.split("?")[0]
+                    
+                    if notice_id in seen_urls: 
+                        continue
+                    seen_urls.add(notice_id)
+                    
+                    if notice_id in posted_notice_ids and not is_test: 
+                        continue
+                    
+                    targets.append({"id": notice_id, "title": title, "url": full_url})
+                    if is_test and len(targets) >= 1: 
+                        break
 
             for target in targets:
                 try:
